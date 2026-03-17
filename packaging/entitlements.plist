@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Hardened Runtime entitlements required for a JUCE audio plugin
+        to pass notarization and load correctly in DAWs on macOS 10.15+.
+    -->
+
+    <!--
+        Allows the plugin binary to contain unsigned or differently-signed
+        pages of executable memory. JUCE's internal dispatch and some DAW
+        host bridges require this; without it codesign --verify will pass
+        but the plugin will be killed at load time by the kernel.
+    -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!--
+        Disables library validation so the host DAW (which is signed with a
+        different Team ID) can load the plugin dylib. Required for AU and
+        VST3 plugins that are injected into a host process.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+        Allow JIT compilation. Some JUCE DSP paths and third-party libraries
+        use MAP_JIT. Safe to include; Apple accepts this for audio plugins.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+</dict>
+</plist>
