@@ -91,11 +91,6 @@ private:
     // =========================================================================
     // FOOTER
     // =========================================================================
-    juce::Label footerLeftLabel;         // "VST3 · AU"
-    juce::Label footerCenterLabel;       // "· JUCE"
-    juce::Label footerRightLabel;        // "Free · 2 presets"
-
-    // =========================================================================
     // Panel bounds — set in resized(), read in paint() for border drawing
     // =========================================================================
     juce::Rectangle<int> dynamicsPanelRect;

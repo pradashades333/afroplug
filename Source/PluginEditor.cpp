@@ -114,13 +114,6 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     makeLabel (mixValueLabel, "62%", 11.0f, AC::textMuted, juce::Justification::centredRight);
 
     // =========================================================================
-    // FOOTER
-    // =========================================================================
-    makeLabel (footerLeftLabel,   "VST3  ·  AU",     10.0f, AC::textDim,   juce::Justification::centredLeft);
-    makeLabel (footerCenterLabel, "·  JUCE",         10.0f, AC::textDim,   juce::Justification::centred);
-    makeLabel (footerRightLabel,  "Free  ·  2 presets", 10.0f, AC::yellow, juce::Justification::centredRight);
-
-    // =========================================================================
     // APVTS Attachments — created AFTER all sliders are configured
     // =========================================================================
     auto& av = processorRef.apvts;
@@ -168,7 +161,7 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
         params.getParameter ("mix_wet")       ->setValueNotifyingHost (rng.nextFloat());
     };
 
-    setSize (900, 560);
+    setSize (900, 528);
 }
 
 AfroplugAudioProcessorEditor::~AfroplugAudioProcessorEditor() {}
@@ -234,12 +227,10 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
     const int topRowY    = 56;
     const int botRowY    = topRowY + 188;
     const int mixBarY    = botRowY + 232;
-    const int footerY    = mixBarY + 52;
 
     drawSep (topRowY);
     drawSep (botRowY);
     drawSep (mixBarY);
-    drawSep (footerY);
 
     // --- Panel backgrounds + borders (top row) ---
     auto drawPanel = [&](const juce::Rectangle<int>& r, juce::Colour accent)
@@ -299,8 +290,7 @@ void AfroplugAudioProcessorEditor::resized()
     auto headerArea  = full.removeFromTop (headerH);
     auto topRowArea  = full.removeFromTop (topRowH);
     auto botRowArea  = full.removeFromTop (botRowH);
-    auto mixArea     = full.removeFromTop (mixBarH);
-    auto footerArea  = full;   // ~32 px
+    auto mixArea     = full;   // fills remaining height
 
     mixBarRect = mixArea;
 
@@ -440,14 +430,4 @@ void AfroplugAudioProcessorEditor::resized()
         mixWetSlider.setBounds   (h);
     }
 
-    // =========================================================================
-    // FOOTER
-    // =========================================================================
-    {
-        auto h = footerArea.reduced (16, 0);
-        const int third = h.getWidth() / 3;
-        footerLeftLabel.setBounds   (h.removeFromLeft  (third));
-        footerRightLabel.setBounds  (h.removeFromRight (third));
-        footerCenterLabel.setBounds (h);
-    }
 }
