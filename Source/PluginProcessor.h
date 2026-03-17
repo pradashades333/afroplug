@@ -51,28 +51,27 @@ private:
     //==============================================================================
     // Atomic parameter pointers — read directly on the audio thread, no locks
     std::atomic<float>* colorVintageParam  { nullptr };   // TONE
-    std::atomic<float>* vibePhaserParam    { nullptr };   // SPACE
-    std::atomic<float>* stereoWidthParam   { nullptr };   // SFX
+    std::atomic<float>* vibePhaserParam    { nullptr };   // SPACE row
+    std::atomic<float>* stereoWidthParam   { nullptr };   // SFX row
     std::atomic<float>* spaceReverbParam   { nullptr };   // REVERB knob
     std::atomic<float>* delayTextureParam  { nullptr };   // DELAY knob
     std::atomic<float>* mixWetParam        { nullptr };   // MIX bar
 
     //==============================================================================
-    // Cached spec — set in prepareToPlay, read in DSP methods
+    // Cached spec — set once in prepareToPlay, used in processBlock
     double currentSampleRate { 44100.0 };
     int    currentBlockSize  { 512 };
 
-    // Pre-allocated dry buffer — avoids heap allocation in processBlock
-    juce::AudioBuffer<float> dryBuffer;
-
     //==============================================================================
-    // DSP scaffold methods — each is a labelled pass-through stub.
-    // Full DSP implementation is deferred to Milestone 2.
-    void processPhaser     (juce::AudioBuffer<float>& buffer, float amount);
-    void processSaturation (juce::AudioBuffer<float>& buffer, float amount);
-    void processReverb     (juce::AudioBuffer<float>& buffer, float amount);
-    void processWidth      (juce::AudioBuffer<float>& buffer, float amount);
-    void processDelay      (juce::AudioBuffer<float>& buffer, float amount);
+    // DSP modules (juce::dsp namespace)
+    //
+    // Chain order:  WaveShaper → Phaser → Delay → Reverb → [stereo width] → DryWetMixer
+    //
+    juce::dsp::Phaser<float>                                  phaser;
+    juce::dsp::Reverb                                         reverb;
+    juce::dsp::DelayLine<float>                               delay { 44100 };   // max ~1 s @ 44.1 kHz
+    juce::dsp::WaveShaper<float, std::function<float(float)>> waveShaper;
+    juce::dsp::DryWetMixer<float>                             dryWetMixer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AfroplugAudioProcessor)
 };
