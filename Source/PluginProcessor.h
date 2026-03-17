@@ -67,11 +67,10 @@ private:
     //
     // Chain order:  WaveShaper → Phaser → Delay → Reverb → [stereo width] → DryWetMixer
     //
-    juce::dsp::Phaser<float>                                  phaser;
-    juce::dsp::Reverb                                         reverb;
-    juce::dsp::DelayLine<float>                               delay { 44100 };   // max ~1 s @ 44.1 kHz
-    juce::dsp::WaveShaper<float, std::function<float(float)>> waveShaper;
-    juce::dsp::DryWetMixer<float>                             dryWetMixer;
+    juce::dsp::Phaser<float>      phaser;
+    juce::dsp::Reverb             reverb;
+    juce::dsp::DelayLine<float>   delay { 192000 };  // max ~4 s @ 48 kHz
+    juce::dsp::DryWetMixer<float> dryWetMixer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AfroplugAudioProcessor)
 };

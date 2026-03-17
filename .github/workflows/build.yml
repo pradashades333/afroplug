@@ -1,0 +1,98 @@
+name: Build Afroplug
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ── macOS — VST3 + AU (Universal binary: arm64 + x86_64) ─────────────────
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DAFROPLUG_COPY_AFTER_BUILD=OFF \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0"
+
+      - name: Build VST3
+        run: cmake --build build --config Release --target Afroplug_VST3 -j$(sysctl -n hw.ncpu)
+
+      - name: Build AU
+        run: cmake --build build --config Release --target Afroplug_AU -j$(sysctl -n hw.ncpu)
+
+      - name: Ad-hoc sign VST3
+        run: |
+          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          codesign --force --deep --sign - --options runtime "$VST3"
+          echo "Signed: $VST3"
+
+      - name: Ad-hoc sign AU
+        run: |
+          AU=$(find build -name "Afroplug.component" -type d | head -1)
+          codesign --force --deep --sign - --options runtime "$AU"
+          echo "Signed: $AU"
+
+      - name: Package VST3
+        run: |
+          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          cd "$(dirname "$VST3")"
+          zip -r "$GITHUB_WORKSPACE/Afroplug-macOS-VST3.zip" "Afroplug.vst3"
+
+      - name: Package AU
+        run: |
+          AU=$(find build -name "Afroplug.component" -type d | head -1)
+          cd "$(dirname "$AU")"
+          zip -r "$GITHUB_WORKSPACE/Afroplug-macOS-AU.zip" "Afroplug.component"
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Afroplug-macOS-VST3
+          path: Afroplug-macOS-VST3.zip
+
+      - name: Upload AU
+        uses: actions/upload-artifact@v4
+        with:
+          name: Afroplug-macOS-AU
+          path: Afroplug-macOS-AU.zip
+
+  # ── Windows — VST3 only ───────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DAFROPLUG_COPY_AFTER_BUILD=OFF
+
+      - name: Build VST3
+        run: cmake --build build --config Release --target Afroplug_VST3
+
+      - name: Package VST3
+        shell: bash
+        run: |
+          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          cd "$(dirname "$VST3")"
+          7z a "$GITHUB_WORKSPACE/Afroplug-Windows-VST3.zip" "Afroplug.vst3"
+
+      - name: Upload VST3
+        uses: actions/upload-artifact@v4
+        with:
+          name: Afroplug-Windows-VST3
+          path: Afroplug-Windows-VST3.zip
