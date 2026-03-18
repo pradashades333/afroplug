@@ -4,21 +4,121 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/**
- * AfroplugAudioProcessorEditor  —  Milestone 1 UI
- *
- * Structural skeleton of the Figma design using only standard JUCE components
- * and a dark colour palette.  No custom LookAndFeel, no custom graphics.
- *
- * Window: 900 × 560 px
- *
- * Sections (top → bottom):
- *   Header    56 px   — brand, preset nav, category label
- *   Top Row  188 px   — 4 equal panels: DYNAMICS / TONE / SPACE / SFX
- *   Bot Row  232 px   — REVERB knob | AI button | DELAY knob
- *   Mix Bar   52 px   — full-width MIX slider
- *   Footer    32 px   — version / format info
- */
+// CustomLookAndFeel
+//   - Rotary sliders: background arc + rounded filled arc, NO thumb dot
+//   - Linear sliders: 2 px thin track + small thumb dot
+//==============================================================================
+class CustomLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    void drawRotarySlider (juce::Graphics& g,
+                           int x, int y, int width, int height,
+                           float sliderPos,
+                           float startAngle, float endAngle,
+                           juce::Slider& slider) override
+    {
+        const float cx     = x + width  * 0.5f;
+        const float cy     = y + height * 0.5f;
+        const float radius = juce::jmin (width, height) * 0.5f - 10.0f;
+
+        if (radius <= 0.0f) return;
+
+        const juce::PathStrokeType stroke (12.0f,
+                                           juce::PathStrokeType::curved,
+                                           juce::PathStrokeType::rounded);
+
+        // Background track arc
+        juce::Path bgArc;
+        bgArc.addCentredArc (cx, cy, radius, radius, 0.0f,
+                             startAngle, endAngle, true);
+        g.setColour (juce::Colour (0xff252530));
+        g.strokePath (bgArc, stroke);
+
+        // Foreground filled arc
+        if (sliderPos > 0.001f)
+        {
+            const float angle = startAngle + sliderPos * (endAngle - startAngle);
+            juce::Path fgArc;
+            fgArc.addCentredArc (cx, cy, radius, radius, 0.0f,
+                                 startAngle, angle, true);
+            g.setColour (slider.findColour (juce::Slider::rotarySliderFillColourId));
+            g.strokePath (fgArc, stroke);
+        }
+        // No thumb dot drawn intentionally
+
+        // Value text centred inside the arc
+        g.setColour (juce::Colours::white);
+        g.setFont   (juce::FontOptions (13.0f, juce::Font::bold));
+        const juce::String valStr =
+            juce::String ((int) std::round (slider.getValue())) + "%";
+        g.drawText (valStr,
+                    juce::Rectangle<float> (cx - 30.0f, cy - 10.0f, 60.0f, 20.0f),
+                    juce::Justification::centred, false);
+    }
+
+    void drawLinearSlider (juce::Graphics& g,
+                           int x, int y, int width, int height,
+                           float sliderPos,
+                           float /*minPos*/, float /*maxPos*/,
+                           juce::Slider::SliderStyle /*style*/,
+                           juce::Slider& slider) override
+    {
+        const float trackH  = 2.0f;
+        const float centreY = y + height * 0.5f;
+
+        // Background track — very dark, barely visible
+        g.setColour (juce::Colour (0xff1a1a1a));
+        g.fillRoundedRectangle ((float)x, centreY - trackH * 0.5f,
+                                (float)width, trackH, 1.0f);
+
+        // Filled (left-of-thumb) portion
+        const float fillW = sliderPos - (float)x;
+        if (fillW > 0.0f)
+        {
+            g.setColour (slider.findColour (juce::Slider::trackColourId));
+            g.fillRoundedRectangle ((float)x, centreY - trackH * 0.5f,
+                                    fillW, trackH, 1.0f);
+        }
+
+        // Thumb dot
+        const float thumbR = 5.0f;
+        g.setColour (slider.findColour (juce::Slider::thumbColourId));
+        g.fillEllipse (sliderPos - thumbR, centreY - thumbR,
+                       thumbR * 2.0f, thumbR * 2.0f);
+    }
+};
+
+//==============================================================================
+// AIButtonLookAndFeel
+//   - Draws the AI button as a perfect filled circle, no border, yellow text
+//==============================================================================
+class AIButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                               const juce::Colour& /*bgColour*/,
+                               bool /*highlighted*/, bool /*down*/) override
+    {
+        auto  b   = button.getLocalBounds().toFloat();
+        float sz  = juce::jmin (b.getWidth(), b.getHeight());
+        auto  circ = juce::Rectangle<float> (b.getCentreX() - sz * 0.5f,
+                                             b.getCentreY() - sz * 0.5f, sz, sz);
+        g.setColour (juce::Colour (0xff151515));
+        g.fillEllipse (circ);
+        // No outline drawn
+    }
+
+    void drawButtonText (juce::Graphics& g, juce::TextButton& button,
+                         bool /*highlighted*/, bool /*down*/) override
+    {
+        g.setColour (juce::Colour (0xffffd600));
+        g.setFont   (juce::FontOptions (20.0f, juce::Font::bold));
+        g.drawText  ("AI", button.getLocalBounds(),
+                     juce::Justification::centred, false);
+    }
+};
+
+//==============================================================================
 class AfroplugAudioProcessorEditor : public juce::AudioProcessorEditor
 {
 public:
@@ -34,65 +134,58 @@ private:
     // =========================================================================
     // HEADER
     // =========================================================================
-    juce::Label       headerTitleLabel;   // "AFROPLUG"
-    juce::TextButton  prevPresetBtn;      // "<"
-    juce::ComboBox    presetCombo;        // "Lagos Nights"
-    juce::TextButton  nextPresetBtn;      // ">"
-    juce::Label       categoryLabel;      // "MELODY FX"
+    juce::Label       headerTitleLabel;
+    juce::TextButton  prevPresetBtn;
+    juce::ComboBox    presetCombo;
+    juce::TextButton  nextPresetBtn;
+    juce::Label       categoryLabel;
 
     // =========================================================================
-    // TOP ROW — EQ  →  eq_sweep
+    // TOP ROW
     // =========================================================================
-    juce::Label  eqTitleLabel;            // "EQ"  (red)
-    juce::Label  dynamicsSubLabel;        // kept for layoutTopPanel lambda — not shown
+    juce::Label  eqTitleLabel;
+    juce::Label  dynamicsSubLabel;    // layout arg — not displayed
     juce::Slider eqSweepSlider;
 
-    // TOP ROW — TONE  →  color_vintage
-    juce::Label  toneTitleLabel;          // "TONE"  (cyan)
-    juce::Label  toneSubLabel;            // "< Clear >"
+    juce::Label  toneTitleLabel;
+    juce::Label  toneSubLabel;        // not displayed
     juce::Slider colorVintageSlider;
 
-    // TOP ROW — SPACE  →  vibe_phaser
-    juce::Label  spaceTitleLabel;         // "SPACE"  (purple)
-    juce::Label  spaceSubLabel;           // "< Room >"
+    juce::Label  spaceTitleLabel;
+    juce::Label  spaceSubLabel;       // not displayed
     juce::Slider vibePhaserSlider;
 
-    // TOP ROW — SFX  →  stereo_width
-    juce::Label  sfxTitleLabel;           // "SFX"  (yellow)
-    juce::Label  sfxSubLabel;             // "< Wide >"
+    juce::Label  sfxTitleLabel;
+    juce::Label  sfxSubLabel;         // not displayed
     juce::Slider stereoWidthSlider;
 
     // =========================================================================
-    // BOTTOM ROW — REVERB  →  space_reverb
+    // BOTTOM ROW
     // =========================================================================
-    juce::Label  reverbTitleLabel;        // "REVERB"
-    juce::Slider spaceReverbSlider;       // rotary
-    juce::Label  reverbValueLabel;        // "28%"
-    juce::Label  reverbMinLabel;          // "0"
-    juce::Label  reverbMaxLabel;          // "100"
+    juce::Label  reverbTitleLabel;
+    juce::Slider spaceReverbSlider;
+    juce::Label  reverbValueLabel;    // updated by onValueChange (not displayed)
+    juce::Label  reverbMinLabel;
+    juce::Label  reverbMaxLabel;
 
-    // BOTTOM ROW — AI button (center)
     juce::TextButton aiButton;
-    juce::Label      aiAnalyzeLabel;      // "ANALYZE"
+    juce::Label      aiAnalyzeLabel;
 
-    // BOTTOM ROW — DELAY  →  delay_texture
-    juce::Label  delayTitleLabel;         // "DELAY"
-    juce::Slider delayTextureSlider;      // rotary
-    juce::Label  delayValueLabel;         // "22%"
-    juce::Label  delayMinLabel;           // "0"
-    juce::Label  delayMaxLabel;           // "100"
+    juce::Label  delayTitleLabel;
+    juce::Slider delayTextureSlider;
+    juce::Label  delayValueLabel;     // updated by onValueChange (not displayed)
+    juce::Label  delayMinLabel;
+    juce::Label  delayMaxLabel;
 
     // =========================================================================
-    // MIX BAR  →  mix_wet
+    // MIX BAR
     // =========================================================================
-    juce::Label  mixLabel;               // "MIX"
+    juce::Label  mixLabel;
     juce::Slider mixWetSlider;
-    juce::Label  mixValueLabel;          // "62%"
+    juce::Label  mixValueLabel;
 
     // =========================================================================
-    // FOOTER
-    // =========================================================================
-    // Panel bounds — set in resized(), read in paint() for border drawing
+    // Panel bounds — set in resized(), used in paint()
     // =========================================================================
     juce::Rectangle<int> eqPanelRect;
     juce::Rectangle<int> tonePanelRect;
@@ -104,7 +197,7 @@ private:
     juce::Rectangle<int> mixBarRect;
 
     // =========================================================================
-    // APVTS Attachments — declared AFTER sliders so they are destroyed first
+    // APVTS Attachments — declared AFTER sliders, destroyed before them
     // =========================================================================
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> eqSweepAttachment;
@@ -116,16 +209,20 @@ private:
     std::unique_ptr<SliderAttachment> mixWetAttachment;
 
     // =========================================================================
+    // LookAndFeel instances — declared LAST so destroyed FIRST
+    //   (components must not outlive their LookAndFeel)
+    // =========================================================================
+    CustomLookAndFeel   customLaf;
+    AIButtonLookAndFeel aiButtonLaf;
+
+    // =========================================================================
     // Helpers
     // =========================================================================
-    void makeLabel      (juce::Label&,      const juce::String& text,
-                         float fontSize,    juce::Colour colour,
-                         juce::Justification just = juce::Justification::centred);
-
-    void makeHSlider    (juce::Slider&, juce::Colour trackColour);
-    void makeRotary     (juce::Slider&, juce::Colour fillColour);
-
-    // Updates percent labels from current slider values
+    void makeLabel   (juce::Label&, const juce::String& text,
+                      float fontSize, juce::Colour colour,
+                      juce::Justification just = juce::Justification::centred);
+    void makeHSlider (juce::Slider&, juce::Colour trackColour);
+    void makeRotary  (juce::Slider&, juce::Colour fillColour);
     void refreshValueLabels();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AfroplugAudioProcessorEditor)
