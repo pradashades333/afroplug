@@ -41,10 +41,11 @@ private:
     juce::Label       categoryLabel;      // "MELODY FX"
 
     // =========================================================================
-    // TOP ROW — DYNAMICS  (placeholder, no APVTS param)
+    // TOP ROW — EQ  →  eq_sweep
     // =========================================================================
-    juce::Label dynamicsTitleLabel;       // "DYNAMICS"  (red)
-    juce::Label dynamicsSubLabel;         // "< Tube >"
+    juce::Label  eqTitleLabel;            // "EQ"  (red)
+    juce::Label  dynamicsSubLabel;        // kept for layoutTopPanel lambda — not shown
+    juce::Slider eqSweepSlider;
 
     // TOP ROW — TONE  →  color_vintage
     juce::Label  toneTitleLabel;          // "TONE"  (cyan)
@@ -93,7 +94,7 @@ private:
     // =========================================================================
     // Panel bounds — set in resized(), read in paint() for border drawing
     // =========================================================================
-    juce::Rectangle<int> dynamicsPanelRect;
+    juce::Rectangle<int> eqPanelRect;
     juce::Rectangle<int> tonePanelRect;
     juce::Rectangle<int> spacePanelRect;
     juce::Rectangle<int> sfxPanelRect;
@@ -106,6 +107,7 @@ private:
     // APVTS Attachments — declared AFTER sliders so they are destroyed first
     // =========================================================================
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    std::unique_ptr<SliderAttachment> eqSweepAttachment;
     std::unique_ptr<SliderAttachment> colorVintageAttachment;
     std::unique_ptr<SliderAttachment> vibePhaserAttachment;
     std::unique_ptr<SliderAttachment> stereoWidthAttachment;

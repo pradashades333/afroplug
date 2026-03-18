@@ -50,6 +50,7 @@ public:
 private:
     //==============================================================================
     // Atomic parameter pointers — read directly on the audio thread, no locks
+    std::atomic<float>* eqSweepParam       { nullptr };   // EQ
     std::atomic<float>* colorVintageParam  { nullptr };   // TONE
     std::atomic<float>* vibePhaserParam    { nullptr };   // SPACE row
     std::atomic<float>* stereoWidthParam   { nullptr };   // SFX row
@@ -70,7 +71,8 @@ private:
     juce::dsp::Phaser<float>      phaser;
     juce::dsp::Reverb             reverb;
     juce::dsp::DelayLine<float>   delay { 192000 };  // max ~4 s @ 48 kHz
-    juce::dsp::DryWetMixer<float> dryWetMixer;
+    juce::dsp::DryWetMixer<float>                   dryWetMixer;
+    juce::dsp::StateVariableTPTFilter<float>         eqFilter;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AfroplugAudioProcessor)
 };

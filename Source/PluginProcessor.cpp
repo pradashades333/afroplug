@@ -18,6 +18,7 @@ AfroplugAudioProcessor::createParameterLayout()
             defaultVal));
     };
 
+    addParam ("eq_sweep",       "EQ Sweep",          0.0f);
     addParam ("color_vintage",  "Color / Vintage",  50.0f);
     addParam ("vibe_phaser",    "Vibe / Phaser",      0.0f);
     addParam ("stereo_width",   "Stereo Width",      50.0f);
@@ -35,6 +36,7 @@ AfroplugAudioProcessor::AfroplugAudioProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "AFROPLUG_STATE", createParameterLayout())
 {
+    eqSweepParam      = apvts.getRawParameterValue ("eq_sweep");
     colorVintageParam = apvts.getRawParameterValue ("color_vintage");
     vibePhaserParam   = apvts.getRawParameterValue ("vibe_phaser");
     stereoWidthParam  = apvts.getRawParameterValue ("stereo_width");
@@ -71,6 +73,12 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     dryWetMixer.prepare (spec);
     dryWetMixer.reset();
     dryWetMixer.setMixingRule (juce::dsp::DryWetMixingRule::linear);
+
+    eqFilter.prepare (spec);
+    eqFilter.reset();
+    eqFilter.setType (juce::dsp::StateVariableTPTFilterType::highpass);
+    eqFilter.setCutoffFrequency (20.0f);   // default: fully open (20 Hz ≈ flat)
+    eqFilter.setResonance (0.707f);        // Butterworth Q — no resonant peak
 }
 
 void AfroplugAudioProcessor::releaseResources()
@@ -79,6 +87,7 @@ void AfroplugAudioProcessor::releaseResources()
     reverb.reset();
     delay.reset();
     dryWetMixer.reset();
+    eqFilter.reset();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -100,6 +109,7 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     for (int i = getTotalNumInputChannels(); i < getTotalNumOutputChannels(); ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
+    const float eqSweep      = eqSweepParam     ->load();
     const float vibePhaser   = vibePhaserParam  ->load();
     const float stereoWidth  = stereoWidthParam ->load();
     const float spaceReverb  = spaceReverbParam ->load();
@@ -115,6 +125,14 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // Save dry signal
     dryWetMixer.setWetMixProportion (mixWet / 100.0f);
     dryWetMixer.pushDrySamples (block);
+
+    // 0. EQ high-pass sweep (eq_sweep) — exponential 20 Hz → 2000 Hz
+    {
+        // At 0 the cutoff sits at 20 Hz (effectively bypassed), at 100 it reaches 2 kHz
+        const float freq = 20.0f * std::pow (100.0f, eqSweep / 100.0f);
+        eqFilter.setCutoffFrequency (juce::jlimit (20.0f, 20000.0f, freq));
+        eqFilter.process (context);
+    }
 
     // 1. Phaser (vibe_phaser) -- subtle sweep, fully off at 0
     {

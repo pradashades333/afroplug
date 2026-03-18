@@ -53,11 +53,11 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     categoryLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
 
     // =========================================================================
-    // TOP ROW — DYNAMICS  (placeholder panel, no slider)
+    // TOP ROW — EQ  (eq_sweep, red)
     // =========================================================================
-    makeLabel (dynamicsTitleLabel, "DYNAMICS", 11.0f, AC::red, juce::Justification::centred);
-    dynamicsTitleLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-    makeLabel (dynamicsSubLabel, "< Tube >", 11.0f, AC::textMuted, juce::Justification::centred);
+    makeLabel (eqTitleLabel, "EQ", 11.0f, AC::red, juce::Justification::centred);
+    eqTitleLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    makeHSlider (eqSweepSlider, juce::Colour (0xfff25050));
 
     // TOP ROW — TONE  (color_vintage, cyan)
     makeLabel (toneTitleLabel, "TONE", 11.0f, AC::cyan, juce::Justification::centred);
@@ -117,6 +117,7 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     // APVTS Attachments — created AFTER all sliders are configured
     // =========================================================================
     auto& av = processorRef.apvts;
+    eqSweepAttachment      = std::make_unique<SliderAttachment> (av, "eq_sweep",       eqSweepSlider);
     colorVintageAttachment = std::make_unique<SliderAttachment> (av, "color_vintage", colorVintageSlider);
     vibePhaserAttachment   = std::make_unique<SliderAttachment> (av, "vibe_phaser",   vibePhaserSlider);
     stereoWidthAttachment  = std::make_unique<SliderAttachment> (av, "stereo_width",  stereoWidthSlider);
@@ -153,6 +154,7 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
         auto& rng    = juce::Random::getSystemRandom();
         auto& params = processorRef.apvts;
         // setValueNotifyingHost takes normalised [0,1] → maps to full 0–100 range
+        params.getParameter ("eq_sweep")      ->setValueNotifyingHost (rng.nextFloat());
         params.getParameter ("color_vintage") ->setValueNotifyingHost (rng.nextFloat());
         params.getParameter ("vibe_phaser")   ->setValueNotifyingHost (rng.nextFloat());
         params.getParameter ("stereo_width")  ->setValueNotifyingHost (rng.nextFloat());
@@ -241,7 +243,7 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawRoundedRectangle (r.toFloat().reduced (1.0f), 4.0f, 1.0f);
     };
 
-    drawPanel (dynamicsPanelRect, AC::red);
+    drawPanel (eqPanelRect, AC::red);
     drawPanel (tonePanelRect,     AC::cyan);
     drawPanel (spacePanelRect,    AC::purple);
     drawPanel (sfxPanelRect,      AC::yellow);
@@ -357,7 +359,7 @@ void AfroplugAudioProcessorEditor::resized()
         auto col2 = topRowArea.removeFromLeft (colW);
         auto col3 = topRowArea; // remaining (== colW or colW±1 due to integer division)
 
-        layoutTopPanel (col0, dynamicsPanelRect, dynamicsTitleLabel, dynamicsSubLabel, nullptr);
+        layoutTopPanel (col0, eqPanelRect, eqTitleLabel, dynamicsSubLabel, &eqSweepSlider);
         layoutTopPanel (col1, tonePanelRect,     toneTitleLabel,     toneSubLabel,     &colorVintageSlider);
         layoutTopPanel (col2, spacePanelRect,    spaceTitleLabel,    spaceSubLabel,    &vibePhaserSlider);
         layoutTopPanel (col3, sfxPanelRect,      sfxTitleLabel,      sfxSubLabel,      &stereoWidthSlider);
