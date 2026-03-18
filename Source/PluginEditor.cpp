@@ -248,6 +248,96 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
     // --- Mix bar background ---
     g.setColour (AC::panelBg2);
     g.fillRect  (mixBarRect);
+
+    // =========================================================================
+    // Top-row module icons + preset selector text
+    //
+    // Layout maths (derived from resized()):
+    //   panelRect = col.reduced(6, 6)            → height 176 px
+    //   inner     = panelRect.reduced(10, 8)     → height 160 px
+    //   title:    inner top 22 px + 8 px gap     → content starts 38 px below panelRect.top
+    //   slider:   inner bottom 30 px             → content ends   38 px above panelRect.bottom
+    //   Preset text (14 px):  4 px above slider start → panelRect.bottom − 56
+    //   Icon centre Y:        centre of [+38 … −60]   → panelRect.top  + 77
+    // =========================================================================
+
+    // Helper: draw "< Word >" with dim arrows and lighter centre word
+    auto drawPresetText = [&](const juce::Rectangle<int>& panel,
+                               const juce::String& word)
+    {
+        const juce::Rectangle<float> tr {
+            (float)(panel.getX() + 10),
+            (float)(panel.getBottom() - 56),
+            (float)(panel.getWidth() - 20),
+            14.0f
+        };
+        juce::AttributedString str;
+        str.setJustification (juce::Justification::centred);
+        str.append ("< ",  juce::Font (juce::FontOptions (10.0f)), juce::Colour (0xff444455));
+        str.append (word,  juce::Font (juce::FontOptions (10.0f)), juce::Colour (0xff666677));
+        str.append (" >",  juce::Font (juce::FontOptions (10.0f)), juce::Colour (0xff444455));
+        str.draw (g, tr);
+    };
+
+    const juce::PathStrokeType stroke2 (2.0f, juce::PathStrokeType::curved,
+                                         juce::PathStrokeType::rounded);
+
+    // --- EQ: sine-wave path (red 0xfff25050) ---
+    {
+        drawPresetText (eqPanelRect, "Highpass");
+        const float icx = (float)eqPanelRect.getCentreX();
+        const float icy = (float)(eqPanelRect.getY() + 77);
+
+        juce::Path wave;
+        constexpr int pts = 48;
+        for (int i = 0; i <= pts; i++)
+        {
+            const float t = (float)i / pts;
+            const float x = icx - 28.0f + 56.0f * t;
+            const float y = icy - 12.0f * std::sin (t * 4.0f * juce::MathConstants<float>::pi);
+            if (i == 0) wave.startNewSubPath (x, y);
+            else         wave.lineTo (x, y);
+        }
+        g.setColour (juce::Colour (0xfff25050));
+        g.strokePath (wave, stroke2);
+    }
+
+    // --- TONE: knob circle + centre dot + 12-o'clock pointer (light blue 0xff3cb4d6) ---
+    {
+        drawPresetText (tonePanelRect, "Clear");
+        const float icx = (float)tonePanelRect.getCentreX();
+        const float icy = (float)(tonePanelRect.getY() + 77);
+        const float r   = 18.0f;
+
+        g.setColour (juce::Colour (0xff3cb4d6));
+        g.drawEllipse (icx - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);   // outer ring
+        g.drawLine    (icx, icy - 4.0f, icx, icy - r + 2.0f, 2.0f);   // pointer up
+        g.fillEllipse (icx - 4.0f, icy - 4.0f, 8.0f, 8.0f);           // centre dot (drawn last)
+    }
+
+    // --- SPACE: small filled square + larger rounded outer square (purple 0xffa173f2) ---
+    {
+        drawPresetText (spacePanelRect, "Room");
+        const float icx = (float)spacePanelRect.getCentreX();
+        const float icy = (float)(spacePanelRect.getY() + 77);
+
+        g.setColour (juce::Colour (0xffa173f2));
+        g.drawRoundedRectangle (icx - 18.0f, icy - 18.0f, 36.0f, 36.0f, 4.0f, 2.0f);  // outer
+        g.fillRect (juce::Rectangle<float> (icx - 5.0f, icy - 5.0f, 10.0f, 10.0f));    // inner dot
+    }
+
+    // --- SFX: Venn-diagram overlapping circles (yellow 0xffffd600) ---
+    {
+        drawPresetText (sfxPanelRect, "Wide");
+        const float icx = (float)sfxPanelRect.getCentreX();
+        const float icy = (float)(sfxPanelRect.getY() + 77);
+        const float r   = 14.0f;
+        const float off = 9.0f;
+
+        g.setColour (juce::Colour (0xffffd600));
+        g.drawEllipse (icx - off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);   // left circle
+        g.drawEllipse (icx + off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);   // right circle
+    }
 }
 
 //==============================================================================
