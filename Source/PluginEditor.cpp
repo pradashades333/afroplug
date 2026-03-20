@@ -248,6 +248,8 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     // =========================================================================
     aiButton.onClick = [this]() { processorRef.triggerAIAnalysis(); };
 
+    setResizable (true, true);
+    setResizeLimits (540, 316, 1800, 1056);
     setSize (900, 528);
 }
 
@@ -306,10 +308,11 @@ void AfroplugAudioProcessorEditor::makeRotary (juce::Slider& s, juce::Colour fil
 void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
 {
     const int w        = getWidth();
-    const int topRowY  = 56;
-    const int topRowH  = 188;
+    const int fullH    = getHeight();
+    const int topRowY  = juce::roundToInt (fullH * 0.1060f);
+    const int topRowH  = juce::roundToInt (fullH * 0.3561f);
     const int botRowY  = topRowY + topRowH;
-    const int botRowH  = 232;
+    const int botRowH  = juce::roundToInt (fullH * 0.4394f);
     const int mixBarY  = botRowY + botRowH;
 
     // --- Global background ---
@@ -623,41 +626,42 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
     const juce::PathStrokeType stroke2 (2.0f, juce::PathStrokeType::curved,
                                          juce::PathStrokeType::rounded);
 
+    // Icon centre Y = 44% down the panel; icon size = 25% of panel height
+    auto iconCY  = [](const juce::Rectangle<int>& p) { return (float)p.getY() + (float)p.getHeight() * 0.44f; };
+    auto iconSz  = [](const juce::Rectangle<int>& p) { return (float)p.getHeight() * 0.25f; };
+
     // --- EQ: mode icon (changes with selector) ---
     {
-        const int   mode = eqModeSelector.getSelectedItemIndex();   // 0-based, matches AudioParameterChoice index
-        const float icx  = (float) eqPanelRect.getCentreX();
-        const float icy  = (float) (eqPanelRect.getY() + 77);
-        drawEqModeIcon (mode, icx, icy, 44.0f, AC::red);
+        const int   mode = eqModeSelector.getSelectedItemIndex();
+        drawEqModeIcon (mode, (float)eqPanelRect.getCentreX(), iconCY(eqPanelRect),
+                        iconSz(eqPanelRect), AC::red);
     }
 
     // --- TONE: mode icon (changes with selector) ---
     {
         const int   mode = toneModeSelector.getSelectedItemIndex();
-        const float icx  = (float) tonePanelRect.getCentreX();
-        const float icy  = (float) (tonePanelRect.getY() + 77);
-        drawToneModeIcon (mode, icx, icy, 44.0f, AC::cyan);
+        drawToneModeIcon (mode, (float)tonePanelRect.getCentreX(), iconCY(tonePanelRect),
+                          iconSz(tonePanelRect), AC::cyan);
     }
 
     // --- SPACE: reverb mode icon (changes with selector) ---
     {
         const int   mode = reverbModeSelector.getSelectedItemIndex();
-        const float icx  = (float) spacePanelRect.getCentreX();
-        const float icy  = (float) (spacePanelRect.getY() + 77);
-        drawReverbModeIcon (mode, icx, icy, 40.0f, AC::purple);
+        drawReverbModeIcon (mode, (float)spacePanelRect.getCentreX(), iconCY(spacePanelRect),
+                            iconSz(spacePanelRect) * 0.91f, AC::purple);
     }
 
-    // --- SFX: Venn-diagram overlapping circles (yellow 0xffffd600) ---
+    // --- SFX: Venn-diagram overlapping circles ---
     {
         drawPresetText (sfxPanelRect, "Wide");
         const float icx = (float)sfxPanelRect.getCentreX();
-        const float icy = (float)(sfxPanelRect.getY() + 77);
-        const float r   = 14.0f;
-        const float off = 9.0f;
+        const float icy = iconCY (sfxPanelRect);
+        const float r   = iconSz (sfxPanelRect) * 0.32f;
+        const float off = r * 0.64f;
 
         g.setColour (juce::Colour (0xffffd600));
-        g.drawEllipse (icx - off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);   // left circle
-        g.drawEllipse (icx + off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);   // right circle
+        g.drawEllipse (icx - off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);
+        g.drawEllipse (icx + off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);
     }
 
 }
@@ -666,10 +670,11 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
 void AfroplugAudioProcessorEditor::resized()
 {
     auto full = getLocalBounds();
+    const int h = getHeight();
 
-    const int headerH = 56;
-    const int topRowH = 188;
-    const int botRowH = 232;
+    const int headerH = juce::roundToInt (h * 0.1060f);   // ~56 at 528
+    const int topRowH = juce::roundToInt (h * 0.3561f);   // ~188 at 528
+    const int botRowH = juce::roundToInt (h * 0.4394f);   // ~232 at 528
 
     auto headerArea = full.removeFromTop (headerH);
     auto topRowArea = full.removeFromTop (topRowH);
@@ -682,18 +687,18 @@ void AfroplugAudioProcessorEditor::resized()
     // HEADER
     // =========================================================================
     {
-        auto h = headerArea.reduced (16, 0);
-        headerTitleLabel.setBounds (h.removeFromLeft  (130));
-        categoryLabel.setBounds    (h.removeFromRight (130));
-        h.reduce (8, 0);
-        prevPresetBtn.setBounds (h.removeFromLeft  (28));
-        h.removeFromLeft (4);
-        nextPresetBtn.setBounds (h.removeFromRight (28));
-        h.removeFromRight (4);
-        savePresetBtn.setBounds (h.removeFromRight (44));
-        h.removeFromRight (6);
-        presetCombo.setBounds (h.withSizeKeepingCentre (
-                                   juce::jmin (220, h.getWidth()), 26));
+        auto hdr = headerArea.reduced (16, 0);
+        headerTitleLabel.setBounds (hdr.removeFromLeft  (130));
+        categoryLabel.setBounds    (hdr.removeFromRight (130));
+        hdr.reduce (8, 0);
+        prevPresetBtn.setBounds (hdr.removeFromLeft  (28));
+        hdr.removeFromLeft (4);
+        nextPresetBtn.setBounds (hdr.removeFromRight (28));
+        hdr.removeFromRight (4);
+        savePresetBtn.setBounds (hdr.removeFromRight (44));
+        hdr.removeFromRight (6);
+        presetCombo.setBounds (hdr.withSizeKeepingCentre (
+                                   juce::jmin (220, hdr.getWidth()), 26));
     }
 
     // =========================================================================
@@ -791,11 +796,11 @@ void AfroplugAudioProcessorEditor::resized()
     // MIX BAR
     // =========================================================================
     {
-        auto h = mixArea.reduced (16, 0);
-        mixLabel.setBounds      (h.removeFromLeft  (52));
-        h.removeFromLeft (6);
-        mixValueLabel.setBounds (h.removeFromRight (52));
-        h.removeFromRight (6);
-        mixWetSlider.setBounds  (h);
+        auto mh = mixArea.reduced (16, 0);
+        mixLabel.setBounds      (mh.removeFromLeft  (52));
+        mh.removeFromLeft (6);
+        mixValueLabel.setBounds (mh.removeFromRight (52));
+        mh.removeFromRight (6);
+        mixWetSlider.setBounds  (mh);
     }
 }
