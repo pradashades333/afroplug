@@ -32,27 +32,29 @@ jobs:
 
       - name: Ad-hoc sign VST3
         run: |
-          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
+          VST3=$(find build -name "*.vst3" -type d | head -1)
+          echo "Found VST3: $VST3"
           codesign --force --deep --sign - --options runtime "$VST3"
-          echo "Signed: $VST3"
 
       - name: Ad-hoc sign AU
         run: |
-          AU=$(find build -name "Soul FX.component" -type d | head -1)
+          AU=$(find build -name "*.component" -type d | head -1)
+          echo "Found AU: $AU"
           codesign --force --deep --sign - --options runtime "$AU"
-          echo "Signed: $AU"
 
       - name: Package VST3
         run: |
-          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
+          VST3=$(find build -name "*.vst3" -type d | head -1)
+          VNAME=$(basename "$VST3")
           cd "$(dirname "$VST3")"
-          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-VST3.zip" "Soul FX.vst3"
+          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-VST3.zip" "$VNAME"
 
       - name: Package AU
         run: |
-          AU=$(find build -name "Soul FX.component" -type d | head -1)
+          AU=$(find build -name "*.component" -type d | head -1)
+          ANAME=$(basename "$AU")
           cd "$(dirname "$AU")"
-          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-AU.zip" "Soul FX.component"
+          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-AU.zip" "$ANAME"
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
@@ -87,9 +89,11 @@ jobs:
       - name: Package VST3
         shell: bash
         run: |
-          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
+          VST3=$(find build -name "*.vst3" -type d | head -1)
+          VNAME=$(basename "$VST3")
+          echo "Found VST3: $VST3"
           cd "$(dirname "$VST3")"
-          7z a "$GITHUB_WORKSPACE/SoulFX-Windows-VST3.zip" "Soul FX.vst3"
+          7z a "$GITHUB_WORKSPACE/SoulFX-Windows-VST3.zip" "$VNAME"
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
