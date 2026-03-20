@@ -47,11 +47,28 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
+    // Called from the UI thread when the AI button is pressed
+    void triggerAIAnalysis();
+
+    // Live audio-feature meters (updated every processBlock, read on UI thread)
+    std::atomic<float> currentRMS { 0.0f };
+    std::atomic<float> currentZCR { 0.0f };
+
+    // =========================================================================
+    // Preset management — all called from the UI / message thread
+    // =========================================================================
+    juce::StringArray getAvailablePresets() const;
+    void loadPreset  (const juce::String& presetName);
+    void savePreset  (const juce::String& presetName);
+
 private:
     //==============================================================================
     // Atomic parameter pointers — read directly on the audio thread, no locks
-    std::atomic<float>* eqSweepParam       { nullptr };   // EQ
-    std::atomic<float>* colorVintageParam  { nullptr };   // TONE
+    std::atomic<float>* eqSweepParam       { nullptr };   // EQ sweep (0–100)
+    std::atomic<float>* eqModeParam        { nullptr };   // EQ mode (0–4)
+    std::atomic<float>* reverbModeParam    { nullptr };   // Reverb mode (0–4)
+    std::atomic<float>* colorVintageParam  { nullptr };   // TONE knob (drive)
+    std::atomic<float>* toneModeParam      { nullptr };   // Tone mode (0–4)
     std::atomic<float>* vibePhaserParam    { nullptr };   // SPACE row
     std::atomic<float>* stereoWidthParam   { nullptr };   // SFX row
     std::atomic<float>* spaceReverbParam   { nullptr };   // REVERB knob
@@ -63,6 +80,9 @@ private:
     double currentSampleRate { 44100.0 };
     int    currentBlockSize  { 512 };
 
+    // RMS smoothing state (audio thread only)
+    float prevSample { 0.0f };
+
     //==============================================================================
     // DSP modules (juce::dsp namespace)
     //
@@ -70,9 +90,28 @@ private:
     //
     juce::dsp::Phaser<float>      phaser;
     juce::dsp::Reverb             reverb;
-    juce::dsp::DelayLine<float>   delay { 192000 };  // max ~4 s @ 48 kHz
-    juce::dsp::DryWetMixer<float>                   dryWetMixer;
-    juce::dsp::StateVariableTPTFilter<float>         eqFilter;
+    juce::dsp::DelayLine<float>   delay { 576000 };  // max 3 s @ 192 kHz
+    juce::dsp::DryWetMixer<float>                    dryWetMixer;
+    juce::dsp::StateVariableTPTFilter<float> eqFilter1;   // primary EQ (HP/LP/BP)
+
+    // High-shelf for Vocal mode — ProcessorDuplicator gives stereo support for IIR
+    using StereoIIR = juce::dsp::ProcessorDuplicator<
+                          juce::dsp::IIR::Filter<float>,
+                          juce::dsp::IIR::Coefficients<float>>;
+    StereoIIR eqFilter2;
+
+    // Post-reverb filter — used for Studio (LPF 5 kHz) and Abyss (LPF 600 Hz)
+    juce::dsp::StateVariableTPTFilter<float> reverbPostFilter;
+
+    // Console mode EQ — low-mid bell @ 250 Hz + high shelf @ 8 kHz
+    StereoIIR toneConsoleLoMid;
+    StereoIIR toneConsoleHiShelf;
+
+    // Safety soft clipper — last in chain, keeps output below 0 dBFS
+    juce::dsp::WaveShaper<float, std::function<float(float)>> safetyClipper;
+
+    // Preset directory (Documents/Afroplug/Soul FX/Presets)
+    juce::File presetDir;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AfroplugAudioProcessor)
 };

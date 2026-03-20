@@ -138,18 +138,21 @@ private:
     juce::TextButton  prevPresetBtn;
     juce::ComboBox    presetCombo;
     juce::TextButton  nextPresetBtn;
+    juce::TextButton  savePresetBtn;
     juce::Label       categoryLabel;
 
     // =========================================================================
     // TOP ROW
     // =========================================================================
-    juce::Label  eqTitleLabel;
-    juce::Label  dynamicsSubLabel;    // layout arg — not displayed
-    juce::Slider eqSweepSlider;
+    juce::Label    eqTitleLabel;
+    juce::Label    dynamicsSubLabel;    // layout arg — not displayed
+    juce::Slider   eqSweepSlider;
+    juce::ComboBox eqModeSelector;
 
-    juce::Label  toneTitleLabel;
-    juce::Label  toneSubLabel;        // not displayed
-    juce::Slider colorVintageSlider;
+    juce::Label    toneTitleLabel;
+    juce::Label    toneSubLabel;      // not displayed
+    juce::Slider   colorVintageSlider;
+    juce::ComboBox toneModeSelector;
 
     juce::Label  spaceTitleLabel;
     juce::Label  spaceSubLabel;       // not displayed
@@ -162,8 +165,9 @@ private:
     // =========================================================================
     // BOTTOM ROW
     // =========================================================================
-    juce::Label  reverbTitleLabel;
-    juce::Slider spaceReverbSlider;
+    juce::Label    reverbTitleLabel;
+    juce::Slider   spaceReverbSlider;
+    juce::ComboBox reverbModeSelector;
     juce::Label  reverbValueLabel;    // updated by onValueChange (not displayed)
     juce::Label  reverbMinLabel;
     juce::Label  reverbMaxLabel;
@@ -200,7 +204,11 @@ private:
     // APVTS Attachments — declared AFTER sliders, destroyed before them
     // =========================================================================
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
-    std::unique_ptr<SliderAttachment> eqSweepAttachment;
+    std::unique_ptr<SliderAttachment>   eqSweepAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    std::unique_ptr<ComboBoxAttachment> eqModeAttachment;
+    std::unique_ptr<ComboBoxAttachment> toneModeAttachment;
+    std::unique_ptr<ComboBoxAttachment> reverbModeAttachment;
     std::unique_ptr<SliderAttachment> colorVintageAttachment;
     std::unique_ptr<SliderAttachment> vibePhaserAttachment;
     std::unique_ptr<SliderAttachment> stereoWidthAttachment;

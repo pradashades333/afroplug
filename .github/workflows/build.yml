@@ -1,4 +1,4 @@
-name: Build Afroplug
+name: Build Soul FX
 
 on:
   push:
@@ -32,39 +32,39 @@ jobs:
 
       - name: Ad-hoc sign VST3
         run: |
-          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
           codesign --force --deep --sign - --options runtime "$VST3"
           echo "Signed: $VST3"
 
       - name: Ad-hoc sign AU
         run: |
-          AU=$(find build -name "Afroplug.component" -type d | head -1)
+          AU=$(find build -name "Soul FX.component" -type d | head -1)
           codesign --force --deep --sign - --options runtime "$AU"
           echo "Signed: $AU"
 
       - name: Package VST3
         run: |
-          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
           cd "$(dirname "$VST3")"
-          zip -r "$GITHUB_WORKSPACE/Afroplug-macOS-VST3.zip" "Afroplug.vst3"
+          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-VST3.zip" "Soul FX.vst3"
 
       - name: Package AU
         run: |
-          AU=$(find build -name "Afroplug.component" -type d | head -1)
+          AU=$(find build -name "Soul FX.component" -type d | head -1)
           cd "$(dirname "$AU")"
-          zip -r "$GITHUB_WORKSPACE/Afroplug-macOS-AU.zip" "Afroplug.component"
+          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-AU.zip" "Soul FX.component"
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
-          name: Afroplug-macOS-VST3
-          path: Afroplug-macOS-VST3.zip
+          name: SoulFX-macOS-VST3
+          path: SoulFX-macOS-VST3.zip
 
       - name: Upload AU
         uses: actions/upload-artifact@v4
         with:
-          name: Afroplug-macOS-AU
-          path: Afroplug-macOS-AU.zip
+          name: SoulFX-macOS-AU
+          path: SoulFX-macOS-AU.zip
 
   # ── Windows — VST3 only ───────────────────────────────────────────────────
   build-windows:
@@ -87,12 +87,12 @@ jobs:
       - name: Package VST3
         shell: bash
         run: |
-          VST3=$(find build -name "Afroplug.vst3" -type d | head -1)
+          VST3=$(find build -name "Soul FX.vst3" -type d | head -1)
           cd "$(dirname "$VST3")"
-          7z a "$GITHUB_WORKSPACE/Afroplug-Windows-VST3.zip" "Afroplug.vst3"
+          7z a "$GITHUB_WORKSPACE/SoulFX-Windows-VST3.zip" "Soul FX.vst3"
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
-          name: Afroplug-Windows-VST3
-          path: Afroplug-Windows-VST3.zip
+          name: SoulFX-Windows-VST3
+          path: SoulFX-Windows-VST3.zip
