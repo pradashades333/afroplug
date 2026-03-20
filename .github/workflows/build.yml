@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── macOS — VST3 + AU (Universal binary: arm64 + x86_64) ─────────────────
+  # ── macOS — VST3 + AU + .pkg installer ───────────────────────────────────
   build-macos:
     runs-on: macos-latest
 
@@ -42,31 +42,93 @@ jobs:
           echo "Found AU: $AU"
           codesign --force --deep --sign - "$AU"
 
-      - name: Package VST3
+      - name: Build .pkg installer
         run: |
-          VST3=$(find build -name "*.vst3" -type d | head -1)
-          VNAME=$(basename "$VST3")
-          cd "$(dirname "$VST3")"
-          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-VST3.zip" "$VNAME"
+          VST3=$(find build -name "*.vst3"      -type d | head -1)
+          AU=$(find   build -name "*.component" -type d | head -1)
 
-      - name: Package AU
-        run: |
-          AU=$(find build -name "*.component" -type d | head -1)
-          ANAME=$(basename "$AU")
-          cd "$(dirname "$AU")"
-          zip -r "$GITHUB_WORKSPACE/SoulFX-macOS-AU.zip" "$ANAME"
+          # ── Staging directories (mirror final install paths) ──────────────
+          mkdir -p pkg_stage/vst3/Library/Audio/Plug-Ins/VST3
+          mkdir -p pkg_stage/au/Library/Audio/Plug-Ins/Components
 
-      - name: Upload VST3
+          cp -R "$VST3" pkg_stage/vst3/Library/Audio/Plug-Ins/VST3/
+          cp -R "$AU"   pkg_stage/au/Library/Audio/Plug-Ins/Components/
+
+          # ── Component packages ────────────────────────────────────────────
+          pkgbuild \
+            --root pkg_stage/vst3 \
+            --identifier com.afroplug.soulfx.vst3 \
+            --version 1.0.0 \
+            --install-location / \
+            SoulFX-VST3.pkg
+
+          pkgbuild \
+            --root pkg_stage/au \
+            --identifier com.afroplug.soulfx.au \
+            --version 1.0.0 \
+            --install-location / \
+            SoulFX-AU.pkg
+
+          # ── Distribution XML (single installer, both formats) ─────────────
+          cat > distribution.xml << 'DISTEOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <installer-gui-script minSpecVersion="2">
+              <title>Soul FX by Afroplug</title>
+              <background file="background.png" alignment="bottomleft" scaling="proportional"/>
+              <welcome    file="welcome.html"    mime-type="text/html"/>
+              <license    file="license.html"    mime-type="text/html"/>
+              <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+              <choices-outline>
+                  <line choice="vst3"/>
+                  <line choice="au"/>
+              </choices-outline>
+              <choice id="vst3" title="VST3 Plugin"
+                      description="Installs Soul FX VST3 to /Library/Audio/Plug-Ins/VST3">
+                  <pkg-ref id="com.afroplug.soulfx.vst3"/>
+              </choice>
+              <choice id="au" title="Audio Unit (AU) Plugin"
+                      description="Installs Soul FX AU to /Library/Audio/Plug-Ins/Components">
+                  <pkg-ref id="com.afroplug.soulfx.au"/>
+              </choice>
+              <pkg-ref id="com.afroplug.soulfx.vst3" version="1.0.0">SoulFX-VST3.pkg</pkg-ref>
+              <pkg-ref id="com.afroplug.soulfx.au"   version="1.0.0">SoulFX-AU.pkg</pkg-ref>
+          </installer-gui-script>
+          DISTEOF
+
+          # ── Generate placeholder welcome + license pages if none exist ─────
+          if [ ! -f Installer/welcome.html ]; then
+            mkdir -p Installer
+            cat > Installer/welcome.html << 'EOF'
+          <html><body style="font-family:sans-serif;padding:20px">
+          <h2>Welcome to Soul FX</h2>
+          <p>A professional multi-FX audio plugin by <strong>Afroplug</strong>.</p>
+          <p>This installer will place Soul FX into your system plugin folders so it is
+          automatically detected by Logic Pro, Ableton Live, FL Studio, and other DAWs.</p>
+          </body></html>
+          EOF
+            cat > Installer/license.html << 'EOF'
+          <html><body style="font-family:sans-serif;padding:20px">
+          <h2>License</h2>
+          <p>Soul FX is provided for personal and commercial use by the license holder.
+          Redistribution or resale of this software is not permitted without written
+          consent from Afroplug.</p>
+          <p>&copy; 2025 Afroplug. All rights reserved.</p>
+          </body></html>
+          EOF
+          fi
+
+          # ── Final installer .pkg ──────────────────────────────────────────
+          productbuild \
+            --distribution distribution.xml \
+            --resources Installer \
+            --package-path . \
+            "SoulFX-macOS-Installer.pkg"
+
+      - name: Upload macOS Installer (.pkg)
         uses: actions/upload-artifact@v4
         with:
-          name: SoulFX-macOS-VST3
-          path: SoulFX-macOS-VST3.zip
-
-      - name: Upload AU
-        uses: actions/upload-artifact@v4
-        with:
-          name: SoulFX-macOS-AU
-          path: SoulFX-macOS-AU.zip
+          name: SoulFX-macOS-Installer
+          path: SoulFX-macOS-Installer.pkg
 
   # ── Windows — VST3 only ───────────────────────────────────────────────────
   build-windows:
