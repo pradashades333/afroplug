@@ -34,13 +34,13 @@ jobs:
         run: |
           VST3=$(find build -name "*.vst3" -type d | head -1)
           echo "Found VST3: $VST3"
-          codesign --force --deep --sign - --options runtime "$VST3"
+          codesign --force --deep --sign - "$VST3"
 
       - name: Ad-hoc sign AU
         run: |
           AU=$(find build -name "*.component" -type d | head -1)
           echo "Found AU: $AU"
-          codesign --force --deep --sign - --options runtime "$AU"
+          codesign --force --deep --sign - "$AU"
 
       - name: Package VST3
         run: |
