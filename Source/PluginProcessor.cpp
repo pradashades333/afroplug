@@ -100,6 +100,10 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     oversampling.initProcessing (static_cast<size_t> (samplesPerBlock));
     oversampling.reset();
 
+    // Reset DC blocker state
+    for (int i = 0; i < kMaxCh; ++i)
+        dcBlockX[i] = dcBlockY[i] = 0.0f;
+
     // ── FDN Reverb — pre-allocate at max needed size for this sample rate ─────
     // Base delay lengths (samples at 44.1 kHz). Chosen as coprime values so
     // echo density builds smoothly without periodic clustering.
@@ -359,14 +363,21 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             case 2: // Tube — asymmetric DC-biased clip → even-order harmonics (warm)
             {
-                const float tubeDrive  = 1.0f + drive * 6.0f;
-                const float bias       = drive * 0.20f;
-                const float normFactor = 1.0f / std::tanh ((1.0f + bias) * tubeDrive);
+                // The bias shifts the transfer curve so positive peaks saturate
+                // harder than negative ones (like a real tube stage).
+                // We must subtract the DC component that bias injects at zero input,
+                // then renormalise by the largest peak (pos or neg) to keep unity gain.
+                const float tubeDrive = 1.0f + drive * 6.0f;
+                const float bias      = drive * 0.20f;
+                const float dc        = std::tanh (bias * tubeDrive);
+                const float posMax    = std::tanh ((1.0f + bias) * tubeDrive) - dc;
+                const float negMax    = std::abs (std::tanh ((-1.0f + bias) * tubeDrive) - dc);
+                const float norm      = 1.0f / std::max ({ posMax, negMax, 1e-6f });
                 for (int ch = 0; ch < numCh; ++ch)
                 {
                     float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
                     for (int n = 0; n < osN; ++n)
-                        p[n] = std::tanh ((p[n] + bias) * tubeDrive) * normFactor;
+                        p[n] = (std::tanh ((p[n] + bias) * tubeDrive) - dc) * norm;
                 }
                 break;
             }
@@ -411,6 +422,23 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         // ── Downsample back to base rate ──────────────────────────────────────
         oversampling.processSamplesDown (block);
+
+        // DC blocker — 1-pole HP catches any residual DC (especially from Tube bias).
+        // y[n] = x[n] − x[n−1] + R·y[n−1]   (R = 0.9998 → fc ≈ 3 Hz @ 44.1 kHz)
+        {
+            constexpr float R = 0.9998f;
+            for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
+            {
+                float* p = block.getChannelPointer (static_cast<size_t> (ch));
+                for (int n = 0; n < numSa; ++n)
+                {
+                    const float xn = p[n];
+                    p[n]           = xn - dcBlockX[ch] + R * dcBlockY[ch];
+                    dcBlockX[ch]   = xn;
+                    dcBlockY[ch]   = p[n];
+                }
+            }
+        }
 
         // Console IIR EQ runs at base rate (coefficients are computed at base SR)
         if (toneMode == 3)

@@ -83,6 +83,12 @@ private:
     // RMS smoothing state (audio thread only)
     float prevSample { 0.0f };
 
+    // DC blocker state — catches any DC offset from asymmetric saturation (Tube mode).
+    // 1-pole HP: y[n] = x[n] − x[n−1] + R·y[n−1],  R≈0.9998 ≈ 3 Hz @ 44.1 kHz
+    static constexpr int kMaxCh = 2;
+    float dcBlockX[kMaxCh] {};
+    float dcBlockY[kMaxCh] {};
+
     //==============================================================================
     // DSP modules (juce::dsp namespace)
     //
