@@ -110,8 +110,15 @@ private:
     float ottLP1Coef      { 0.042f };   // recomputed in prepareToPlay
     float ottLP2Coef      { 0.355f };   // recomputed in prepareToPlay
 
-    // Crunch pre-emphasis / de-emphasis state (toneConsoleLoMid / toneConsoleHiShelf)
-    // — no extra state vars needed; filters are reused via toneConsoleLoMid / toneConsoleHiShelf
+    // Deferred DSP reset — set from UI thread (preset load / DAW restore),
+    // consumed at the top of processBlock on the audio thread. Avoids calling
+    // reset() from the wrong thread while the audio engine is running.
+    std::atomic<bool> resetStateRequested { false };
+
+    // Track previous EQ / tone modes so we can flush filter state on mode change,
+    // preventing transient pops when the IIR history from the old mode bleeds through.
+    int prevEqMode   { -1 };
+    int prevToneMode { -1 };
 
     // Stereo-width side-channel HP — removes sub-200 Hz from side so bass stays
     // mono-compatible. Prevents low-frequency phase cancellation on mono playback.

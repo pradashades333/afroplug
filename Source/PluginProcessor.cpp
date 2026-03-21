@@ -224,6 +224,32 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 {
     juce::ScopedNoDenormals noDenormals;
 
+    // ── Deferred state reset (triggered by preset load or DAW session restore) ──
+    // Runs on the audio thread so it's safe to call reset() on all DSP objects.
+    if (resetStateRequested.exchange (false))
+    {
+        phaser.reset();
+        delay.reset();
+        dryWetMixer.reset();
+        eqFilter1.reset();
+        eqFilter2.reset();
+        toneConsoleLoMid.reset();
+        toneConsoleHiShelf.reset();
+        for (int i = 0; i < kMaxCh; ++i)
+            tapeHfLP[i] = delayFbLP[i] = dcBlockX[i] = dcBlockY[i]
+                        = ottLP1[i]    = ottLP2[i]    = 0.0f;
+        sideHPx1 = sideHPy1 = prevSample = 0.0f;
+        for (int i = 0; i < kFDNTaps; ++i)
+        {
+            std::fill (fdnL[i].buf.begin(), fdnL[i].buf.end(), 0.0f);
+            std::fill (fdnR[i].buf.begin(), fdnR[i].buf.end(), 0.0f);
+            fdnL[i].writePos = fdnR[i].writePos = 0;
+            fdnL[i].dampZ    = fdnR[i].dampZ    = 0.0f;
+        }
+        prevEqMode   = -1;   // force filter flush on next block
+        prevToneMode = -1;
+    }
+
     for (int i = getTotalNumInputChannels(); i < getTotalNumOutputChannels(); ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
@@ -255,8 +281,11 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         const int   divIdx        = static_cast<int> (std::round (delayDivisionParam->load()));
         const int   denom         = divIdx + 2;
-        const float delayInSamples = static_cast<float> (
-            60.0 / currentBpm * 4.0 / denom * getSampleRate());
+        // Clamp to one sample below the DelayLine's compile-time max (576000).
+        // Without this, very low BPM (< ~40) at 192 kHz overflows the buffer.
+        const float delayInSamples = juce::jmin (
+            static_cast<float> (60.0 / currentBpm * 4.0 / denom * getSampleRate()),
+            575999.0f);
         delay.setDelay (delayInSamples);
     }
 
@@ -292,6 +321,15 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     // 0. EQ — 5 modes, sweep knob modulates the key frequency in each mode
     {
+        // Flush IIR state when the mode changes — prevents the accumulated history
+        // of the previous mode (e.g. Vocal shelf boost) bleeding through as a transient.
+        if (eqMode != prevEqMode)
+        {
+            eqFilter1.reset();
+            eqFilter2.reset();
+            prevEqMode = eqMode;
+        }
+
         // Helper: exponential map 0–100 → loHz–hiHz
         auto expMap = [] (float t, float lo, float hi) -> float {
             return lo * std::pow (hi / lo, t / 100.0f);
@@ -357,9 +395,21 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 
     // 0.5. TONE — 5 saturation modes, all processed at 4× sample rate.
+    // Flush tone filter states when mode changes to avoid transient pops.
     // Oversampling prevents aliasing harmonics from folding back into the audio band,
     // which is what makes basic waveshapers sound harsh and "digital".
     {
+        if (toneMode != prevToneMode)
+        {
+            toneConsoleLoMid.reset();
+            toneConsoleHiShelf.reset();
+            // Also flush OTT crossover state so band history from previous mode
+            // doesn't saturate the new mode's first few blocks.
+            for (int i = 0; i < kMaxCh; ++i)
+                ottLP1[i] = ottLP2[i] = 0.0f;
+            prevToneMode = toneMode;
+        }
+
         const float drive = colorVintage / 100.0f;
 
         // ── Crunch pre-emphasis — boost ~2.2 kHz before saturation ──────────
@@ -808,7 +858,7 @@ juce::String AfroplugAudioProcessor::triggerAIAnalysis()
         // High ZCR: vocals / bright leads — air-boost EQ, lush verb, subtle delay
         set ("eq_mode",       modeNorm (2));
         set ("eq_sweep",      norm (70.0f));
-        set ("tone_mode",     modeNorm (0));   // Clear
+        set ("tone_mode",     modeNorm (0));   // Warm
         set ("color_vintage", norm (35.0f));
         set ("space_reverb",  norm (60.0f));
         set ("reverb_mode",   modeNorm (1));   // Plate
@@ -840,7 +890,7 @@ juce::String AfroplugAudioProcessor::triggerAIAnalysis()
         // Quiet + mid ZCR: pads / ambient — wide, long reverb, drifting delay
         set ("eq_mode",       modeNorm (4));   // Underwater
         set ("eq_sweep",      norm (50.0f));
-        set ("tone_mode",     modeNorm (0));   // Clear
+        set ("tone_mode",     modeNorm (0));   // Warm
         set ("color_vintage", norm (30.0f));
         set ("space_reverb",  norm (80.0f));
         set ("reverb_mode",   modeNorm (3));   // Hall
@@ -854,7 +904,7 @@ juce::String AfroplugAudioProcessor::triggerAIAnalysis()
     // Mid ZCR + mid RMS: melodic / guitars — balanced treatment
     set ("eq_mode",       modeNorm (1));   // High Cut
     set ("eq_sweep",      norm (40.0f));
-    set ("tone_mode",     modeNorm (3));   // Console
+    set ("tone_mode",     modeNorm (3));   // Air
     set ("color_vintage", norm (50.0f));
     set ("space_reverb",  norm (45.0f));
     set ("reverb_mode",   modeNorm (2));   // Chamber
@@ -884,7 +934,10 @@ void AfroplugAudioProcessor::loadPreset (const juce::String& presetName)
 
     auto xml = juce::XmlDocument::parse (f);
     if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+    {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        resetStateRequested.store (true);   // flush DSP state on next audio block
+    }
 }
 
 void AfroplugAudioProcessor::savePreset (const juce::String& presetName)
@@ -908,7 +961,10 @@ void AfroplugAudioProcessor::setStateInformation (const void* data, int sizeInBy
 {
     std::unique_ptr<juce::XmlElement> xml (getXmlFromBinary (data, sizeInBytes));
     if (xml != nullptr && xml->hasTagName (apvts.state.getType()))
+    {
         apvts.replaceState (juce::ValueTree::fromXml (*xml));
+        resetStateRequested.store (true);   // flush DSP state on next audio block
+    }
 }
 
 //==============================================================================
