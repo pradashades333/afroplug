@@ -89,26 +89,42 @@ private:
     // Chain order:  WaveShaper → Phaser → Delay → Reverb → [stereo width] → DryWetMixer
     //
     juce::dsp::Phaser<float>      phaser;
-    juce::dsp::Reverb             reverb;
-    juce::dsp::DelayLine<float>   delay { 576000 };  // max 3 s @ 192 kHz
-    juce::dsp::DryWetMixer<float>                    dryWetMixer;
-    juce::dsp::StateVariableTPTFilter<float> eqFilter1;   // primary EQ (HP/LP/BP)
+    // Lagrange3pt interpolation removes the pitch-modulation zipper noise from
+    // fractional delay reads (much better than the default Linear interpolation).
+    juce::dsp::DelayLine<float,
+        juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> delay { 576000 };
+    juce::dsp::DryWetMixer<float> dryWetMixer;
+    juce::dsp::StateVariableTPTFilter<float> eqFilter1;
 
-    // High-shelf for Vocal mode — ProcessorDuplicator gives stereo support for IIR
     using StereoIIR = juce::dsp::ProcessorDuplicator<
                           juce::dsp::IIR::Filter<float>,
                           juce::dsp::IIR::Coefficients<float>>;
     StereoIIR eqFilter2;
-
-    // Post-reverb filter — used for Studio (LPF 5 kHz) and Abyss (LPF 600 Hz)
-    juce::dsp::StateVariableTPTFilter<float> reverbPostFilter;
-
-    // Console mode EQ — low-mid bell @ 250 Hz + high shelf @ 8 kHz
     StereoIIR toneConsoleLoMid;
     StereoIIR toneConsoleHiShelf;
 
-    // Safety soft clipper — last in chain, keeps output below 0 dBFS
     juce::dsp::WaveShaper<float, std::function<float(float)>> safetyClipper;
+
+    // 4× oversampler — wraps the TONE saturation to prevent aliasing harmonics.
+    // filterHalfBandPolyphaseIIR gives near-perfect reconstruction at low CPU cost.
+    juce::dsp::Oversampling<float> oversampling {
+        2, 2,
+        juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
+        true   // use integer latency
+    };
+
+    // ── FDN Reverb ────────────────────────────────────────────────────────────
+    // 4-tap Feedback Delay Network with Householder reflection feedback matrix.
+    // L and R channels use slightly different delay lengths for stereo decorrelation.
+    // Each tap has a 1-pole LP damping filter whose coefficient controls HF decay rate.
+    static constexpr int kFDNTaps = 4;
+    struct FDNLine {
+        std::vector<float> buf;
+        int   writePos  = 0;
+        int   delayLen  = 0;   // active read offset (always < buf.size())
+        float dampZ     = 0.0f;
+    };
+    std::array<FDNLine, kFDNTaps> fdnL, fdnR;
 
     // Preset directory (Documents/Afroplug/Soul FX/Presets)
     juce::File presetDir;

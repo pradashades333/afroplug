@@ -92,19 +92,35 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     phaser.setCentreFrequency (800.0f);
     phaser.setFeedback        (0.25f);
 
-    reverb.prepare (spec);
-    reverb.reset();
-
-    reverbPostFilter.prepare (spec);
-    reverbPostFilter.reset();
-    reverbPostFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-    reverbPostFilter.setCutoffFrequency (5000.0f);
-    reverbPostFilter.setResonance (0.707f);
-
     delay.prepare (spec);
     delay.reset();
-    // Default to 120 BPM quarter note until the host supplies a tempo
     delay.setDelay (static_cast<float> (sampleRate * 60.0 / 120.0));
+
+    // ── 4× oversampler ────────────────────────────────────────────────────────
+    oversampling.initProcessing (static_cast<size_t> (samplesPerBlock));
+    oversampling.reset();
+
+    // ── FDN Reverb — pre-allocate at max needed size for this sample rate ─────
+    // Base delay lengths (samples at 44.1 kHz). Chosen as coprime values so
+    // echo density builds smoothly without periodic clustering.
+    static const int kBase[kFDNTaps] = { 1637, 2053, 2593, 3271 };
+    const double srRatio = sampleRate / 44100.0;
+    for (int i = 0; i < kFDNTaps; ++i)
+    {
+        // Allocate 2.2× the largest mode scale (Abyss = 2.0×) to stay safe.
+        const int maxL = static_cast<int> (kBase[i] * srRatio * 2.2);
+        fdnL[i].buf.assign (maxL, 0.0f);
+        fdnL[i].writePos = 0;
+        fdnL[i].delayLen = static_cast<int> (kBase[i] * srRatio);
+        fdnL[i].dampZ    = 0.0f;
+
+        // R channel: 3.1 % longer — breaks comb-filtering between channels.
+        const int maxR = static_cast<int> (kBase[i] * srRatio * 2.2 * 1.05);
+        fdnR[i].buf.assign (maxR, 0.0f);
+        fdnR[i].writePos = 0;
+        fdnR[i].delayLen = static_cast<int> (kBase[i] * srRatio * 1.031);
+        fdnR[i].dampZ    = 0.0f;
+    }
 
     dryWetMixer.prepare (spec);
     dryWetMixer.reset();
@@ -141,15 +157,21 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 void AfroplugAudioProcessor::releaseResources()
 {
     phaser.reset();
-    reverb.reset();
     delay.reset();
     dryWetMixer.reset();
     eqFilter1.reset();
     eqFilter2.reset();
-    reverbPostFilter.reset();
     toneConsoleLoMid.reset();
     toneConsoleHiShelf.reset();
     safetyClipper.reset();
+    oversampling.reset();
+    for (int i = 0; i < kFDNTaps; ++i)
+    {
+        std::fill (fdnL[i].buf.begin(), fdnL[i].buf.end(), 0.0f);
+        std::fill (fdnR[i].buf.begin(), fdnR[i].buf.end(), 0.0f);
+        fdnL[i].writePos = fdnR[i].writePos = 0;
+        fdnL[i].dampZ    = fdnR[i].dampZ    = 0.0f;
+    }
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -248,12 +270,9 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 eqFilter1.process (context);
                 break;
             }
-            case 1: // High Cut — low-pass sweep 20 kHz → 500 Hz
+            case 1: // High Cut — low-pass sweep 20 kHz → 500 Hz (exponential = musical)
             {
-                // invert: 0 = fully open (20 kHz), 100 = most closed (500 Hz)
-                const float cutoff = juce::jlimit (500.0f, 20000.0f,
-                                                   20000.0f * (1.0f - eqSweep / 100.0f)
-                                                   + 500.0f  * (eqSweep / 100.0f));
+                const float cutoff = expMap (100.0f - eqSweep, 500.0f, 20000.0f);
                 eqFilter1.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
                 eqFilter1.setCutoffFrequency (cutoff);
                 eqFilter1.setResonance (0.707f);
@@ -298,93 +317,86 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // 0.5. TONE — 5 saturation/character modes, driven by color_vintage knob (0–100)
+    // 0.5. TONE — 5 saturation modes, all processed at 4× sample rate.
+    // Oversampling prevents aliasing harmonics from folding back into the audio band,
+    // which is what makes basic waveshapers sound harsh and "digital".
     {
-        const float drive = colorVintage / 100.0f;   // 0.0 – 1.0
+        const float drive = colorVintage / 100.0f;
+
+        // ── Upsample to 4× ────────────────────────────────────────────────────
+        auto osBlock = oversampling.processSamplesUp (block);
+        const int osN = static_cast<int> (osBlock.getNumSamples());
 
         switch (toneMode)
         {
-            case 0: // Clear — identity; tiny soft-limit only to prevent accidental peaks
+            case 0: // Clear — barely-there saturation, stays transparent
             {
                 if (drive > 0.01f)
                 {
                     const float g = 1.0f + drive * 0.08f;
                     for (int ch = 0; ch < numCh; ++ch)
                     {
-                        float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                        for (int n = 0; n < numSa; ++n)
+                        float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
+                        for (int n = 0; n < osN; ++n)
                             p[n] = std::tanh (p[n] * g) / g;
                     }
                 }
                 break;
             }
 
-            case 1: // Tape — tanh waveshaper; slider pushes input harder into saturation
+            case 1: // Tape — soft tanh compression, pushes into saturation gradually
             {
-                const float inputGain  = 1.0f + drive * 5.0f;           // 1× – 6×
+                const float inputGain  = 1.0f + drive * 5.0f;
                 const float normFactor = 1.0f / std::tanh (inputGain);
                 for (int ch = 0; ch < numCh; ++ch)
                 {
-                    float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                    for (int n = 0; n < numSa; ++n)
+                    float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
+                    for (int n = 0; n < osN; ++n)
                         p[n] = std::tanh (p[n] * inputGain) * normFactor;
                 }
                 break;
             }
 
-            case 2: // Tube — asymmetric clip (DC bias → even-order harmonics)
+            case 2: // Tube — asymmetric DC-biased clip → even-order harmonics (warm)
             {
-                const float tubeDrive  = 1.0f + drive * 6.0f;           // 1× – 7×
-                const float bias       = drive * 0.20f;                  // 0 – 0.2 DC offset
+                const float tubeDrive  = 1.0f + drive * 6.0f;
+                const float bias       = drive * 0.20f;
                 const float normFactor = 1.0f / std::tanh ((1.0f + bias) * tubeDrive);
                 for (int ch = 0; ch < numCh; ++ch)
                 {
-                    float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                    for (int n = 0; n < numSa; ++n)
+                    float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
+                    for (int n = 0; n < osN; ++n)
                         p[n] = std::tanh ((p[n] + bias) * tubeDrive) * normFactor;
                 }
                 break;
             }
 
-            case 3: // Console — gentle saturation + 250 Hz warmth + 8 kHz sheen
+            case 3: // Console — very soft saturation; IIR EQ applied after downsample
             {
-                // Very soft saturation (Neve/SSL glue character)
-                const float consoleDrive = 1.0f + drive * 1.5f;         // 1× – 2.5×
+                const float consoleDrive = 1.0f + drive * 1.5f;
                 const float normFactor   = 1.0f / std::tanh (consoleDrive);
                 for (int ch = 0; ch < numCh; ++ch)
                 {
-                    float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                    for (int n = 0; n < numSa; ++n)
+                    float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
+                    for (int n = 0; n < osN; ++n)
                         p[n] = std::tanh (p[n] * consoleDrive) * normFactor;
                 }
-                // Low-mid warmth bell @ 250 Hz (up to +4 dB)
-                *toneConsoleLoMid.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-                    currentSampleRate, 250.0f, 0.5f, 1.0f + drive * 0.8f);
-                toneConsoleLoMid.process (context);
-
-                // Air shelf @ 8 kHz (up to +2 dB)
-                *toneConsoleHiShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-                    currentSampleRate, 8000.0f, 0.7f, 1.0f + drive * 0.4f);
-                toneConsoleHiShelf.process (context);
                 break;
             }
 
-            case 4: // Grit — hard clip + subtle bit-depth reduction (MPC/SP-404 crunch)
+            case 4: // Grit — hard clip + bit crush; oversampling keeps it punchy, not fizzy
             {
                 if (drive > 0.01f)
                 {
-                    const float threshold  = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 0.35f);
-                    const float bitsRemoved = drive * 3.0f;              // 0 – 3 bits removed
+                    const float threshold   = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 0.35f);
+                    const float bitsRemoved = drive * 3.0f;
                     const float quantSteps  = std::pow (2.0f, std::max (1.0f, 16.0f - bitsRemoved));
-
                     for (int ch = 0; ch < numCh; ++ch)
                     {
-                        float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                        for (int n = 0; n < numSa; ++n)
+                        float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
+                        for (int n = 0; n < osN; ++n)
                         {
-                            // Hard clip then renormalise to unity
                             float x = juce::jlimit (-threshold, threshold, p[n]) / threshold;
-                            // Bit reduction
                             if (bitsRemoved > 0.5f)
                                 x = std::round (x * quantSteps) / quantSteps;
                             p[n] = x;
@@ -395,6 +407,21 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
 
             default: break;
+        }
+
+        // ── Downsample back to base rate ──────────────────────────────────────
+        oversampling.processSamplesDown (block);
+
+        // Console IIR EQ runs at base rate (coefficients are computed at base SR)
+        if (toneMode == 3)
+        {
+            *toneConsoleLoMid.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
+                currentSampleRate, 250.0f, 0.5f, 1.0f + drive * 0.8f);
+            toneConsoleLoMid.process (context);
+
+            *toneConsoleHiShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
+                currentSampleRate, 8000.0f, 0.7f, 1.0f + drive * 0.4f);
+            toneConsoleHiShelf.process (context);
         }
     }
 
@@ -428,70 +455,95 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // 3. Reverb — 5 modes, each with distinct character
+    // 3. REVERB — 4-tap FDN with Householder reflection feedback matrix.
+    //
+    // Architecture:
+    //   • 4 delay taps per channel (L and R have slightly different lengths = stereo width)
+    //   • Householder mixing: new_s[i] = s[i] - 0.5 * sum(s)  — orthogonal, energy-preserving
+    //   • Per-tap 1-pole LP damping: dampZ += coef * (s - dampZ)
+    //     where coef near 0 = very dark tail, coef near 1 = very bright tail
+    //   • Global feedback decay controls RT60
+    //
     if (spaceReverb > 0.1f)
     {
         const int reverbMode = static_cast<int> (std::round (reverbModeParam->load()));
-        juce::Reverb::Parameters p;
-        p.dryLevel   = 1.0f;
-        p.freezeMode = 0.0f;
 
+        float fdnDecay, fdnDampCoef, fdnWet, fdnScale;
         switch (reverbMode)
         {
-            case 0: // Studio — tight, high damping, mono-ish, post LPF 5 kHz
-                p.roomSize = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.15f, 0.30f);
-                p.damping  = 0.88f;
-                p.wetLevel = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.30f);
-                p.width    = 0.50f;
-                reverb.setParameters (p);
-                reverb.process (context);
-                reverbPostFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-                reverbPostFilter.setCutoffFrequency (5000.0f);
-                reverbPostFilter.setResonance (0.707f);
-                reverbPostFilter.process (context);
+            case 0: // Studio — tight, intimate, dark
+                fdnDecay    = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.75f, 0.84f);
+                fdnDampCoef = 0.14f;   // strong HF roll-off in feedback = dark tail
+                fdnWet      = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.30f);
+                fdnScale    = 0.55f;   // short delays = small room
                 break;
-
-            case 1: // Plate — bright, low damping, wide, no post EQ
-                p.roomSize = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.55f, 0.75f);
-                p.damping  = 0.10f;
-                p.wetLevel = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.45f);
-                p.width    = 1.0f;
-                reverb.setParameters (p);
-                reverb.process (context);
+            case 1: // Plate — bright, washy, wide
+                fdnDecay    = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.88f, 0.94f);
+                fdnDampCoef = 0.65f;   // less HF roll-off = bright plate sheen
+                fdnWet      = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.45f);
+                fdnScale    = 1.0f;
                 break;
-
-            case 2: // Chamber — balanced, natural, moderate damping
-                p.roomSize = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.45f, 0.65f);
-                p.damping  = 0.50f;
-                p.wetLevel = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.40f);
-                p.width    = 0.80f;
-                reverb.setParameters (p);
-                reverb.process (context);
+            case 2: // Chamber — natural, balanced
+                fdnDecay    = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.84f, 0.91f);
+                fdnDampCoef = 0.38f;
+                fdnWet      = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.40f);
+                fdnScale    = 1.0f;
                 break;
-
-            case 3: // Hall — large, long tail, open highs, fully wide
-                p.roomSize = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.80f, 1.00f);
-                p.damping  = 0.30f;
-                p.wetLevel = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.50f);
-                p.width    = 1.0f;
-                reverb.setParameters (p);
-                reverb.process (context);
+            case 3: // Hall — long, open, expansive
+                fdnDecay    = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.90f, 0.97f);
+                fdnDampCoef = 0.50f;
+                fdnWet      = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.50f);
+                fdnScale    = 1.5f;   // longer delays = larger hall
                 break;
-
-            case 4: // Abyss — near-freeze, very long, post LPF @ 600 Hz for darkness
-                p.roomSize = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.95f, 1.00f);
-                p.damping  = 0.05f;
-                p.wetLevel = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.65f);
-                p.width    = 1.0f;
-                reverb.setParameters (p);
-                reverb.process (context);
-                reverbPostFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-                reverbPostFilter.setCutoffFrequency (600.0f);
-                reverbPostFilter.setResonance (0.707f);
-                reverbPostFilter.process (context);
+            case 4: // Abyss — near-infinite, pitch-black tail
+                fdnDecay    = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.97f, 0.999f);
+                fdnDampCoef = 0.10f;   // maximum HF roll-off = dark endless void
+                fdnWet      = juce::jmap (spaceReverb, 0.0f, 100.0f, 0.0f, 0.65f);
+                fdnScale    = 2.0f;
                 break;
+            default:
+                fdnDecay = 0.85f; fdnDampCoef = 0.35f; fdnWet = 0.30f; fdnScale = 1.0f;
+                break;
+        }
 
-            default: break;
+        // Update active delay lengths (no allocation — buffers sized at 2.2× max at prepare)
+        static const int kBase[kFDNTaps] = { 1637, 2053, 2593, 3271 };
+        const double srRatio = currentSampleRate / 44100.0;
+        for (int i = 0; i < kFDNTaps; ++i)
+        {
+            fdnL[i].delayLen = juce::jmax (1, static_cast<int> (kBase[i] * srRatio * fdnScale));
+            fdnR[i].delayLen = juce::jmax (1, static_cast<int> (kBase[i] * srRatio * fdnScale * 1.031));
+        }
+
+        // Per-sample FDN step (shared between L and R via lambda)
+        auto fdnStep = [&] (std::array<FDNLine, kFDNTaps>& fdn, float input) -> float
+        {
+            float s[kFDNTaps];
+            for (int i = 0; i < kFDNTaps; ++i)
+            {
+                const int sz = static_cast<int> (fdn[i].buf.size());
+                const int rp = (fdn[i].writePos - fdn[i].delayLen + sz) % sz;
+                // 1-pole LP damping in feedback path
+                fdn[i].dampZ += fdnDampCoef * (fdn[i].buf[rp] - fdn[i].dampZ);
+                s[i] = fdn[i].dampZ * fdnDecay;
+            }
+            // Householder reflection: new_s[i] = s[i] − 0.5 × Σs
+            // Orthogonal → lossless energy routing between taps → dense, smooth tail
+            const float sum = s[0] + s[1] + s[2] + s[3];
+            for (int i = 0; i < kFDNTaps; ++i)
+            {
+                fdn[i].buf[fdn[i].writePos] = input + s[i] - 0.5f * sum;
+                fdn[i].writePos = (fdn[i].writePos + 1) % static_cast<int> (fdn[i].buf.size());
+            }
+            return (s[0] + s[1] + s[2] + s[3]) * 0.25f;
+        };
+
+        float* L = buffer.getWritePointer (0);
+        float* R = numCh >= 2 ? buffer.getWritePointer (1) : L;
+        for (int n = 0; n < numSa; ++n)
+        {
+            L[n] += fdnStep (fdnL, L[n]) * fdnWet;
+            if (numCh >= 2) R[n] += fdnStep (fdnR, R[n]) * fdnWet;
         }
     }
 
