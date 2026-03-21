@@ -41,7 +41,7 @@ juce_add_plugin(Afroplug
     IS_MIDI_EFFECT              FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
 
-    PRODUCT_NAME                "Afroplug"
+    PRODUCT_NAME                "Soul FX"
 
     # ── Post-build copy ───────────────────────────────────────────────────────
     COPY_PLUGIN_AFTER_BUILD     ${AFROPLUG_COPY_AFTER_BUILD}

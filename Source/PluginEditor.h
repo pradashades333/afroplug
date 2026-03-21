@@ -207,11 +207,13 @@ private:
     juce::TextButton aiButton;
     juce::Label      aiAnalyzeLabel;
 
-    juce::Label  delayTitleLabel;
-    juce::Slider delayTextureSlider;
-    juce::Label  delayValueLabel;     // updated by onValueChange (not displayed)
-    juce::Label  delayMinLabel;
-    juce::Label  delayMaxLabel;
+    juce::Label    delayTitleLabel;
+    juce::Slider   delayTextureSlider;
+    juce::Label    delayValueLabel;     // updated by onValueChange (not displayed)
+    juce::Label    delayMinLabel;
+    juce::Label    delayMaxLabel;
+    juce::ComboBox delayDivisionSelector;
+    juce::TextButton pingPongButton;
 
     // =========================================================================
     // MIX BAR
@@ -245,7 +247,10 @@ private:
     std::unique_ptr<SliderAttachment> vibePhaserAttachment;
     std::unique_ptr<SliderAttachment> stereoWidthAttachment;
     std::unique_ptr<SliderAttachment> spaceReverbAttachment;
-    std::unique_ptr<SliderAttachment> delayTextureAttachment;
+    std::unique_ptr<SliderAttachment>   delayTextureAttachment;
+    std::unique_ptr<ComboBoxAttachment> delayDivisionAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    std::unique_ptr<ButtonAttachment>   pingPongAttachment;
     std::unique_ptr<SliderAttachment> mixWetAttachment;
 
     // =========================================================================

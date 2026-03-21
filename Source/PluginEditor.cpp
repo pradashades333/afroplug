@@ -144,11 +144,11 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     toneTitleLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
     makeHSlider (colorVintageSlider, AC::cyan);
 
-    toneModeSelector.addItem ("Clear",   1);
-    toneModeSelector.addItem ("Tape",    2);
-    toneModeSelector.addItem ("Tube",    3);
-    toneModeSelector.addItem ("Console", 4);
-    toneModeSelector.addItem ("Grit",    5);
+    toneModeSelector.addItem ("Warm",  1);
+    toneModeSelector.addItem ("Tape",  2);
+    toneModeSelector.addItem ("Tube",  3);
+    toneModeSelector.addItem ("Air",   4);
+    toneModeSelector.addItem ("Crunch", 5);
     toneModeSelector.setSelectedId (1, juce::dontSendNotification);
     toneModeSelector.setJustificationType (juce::Justification::centred);
     toneModeSelector.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff0d0d12));
@@ -204,9 +204,28 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     makeLabel (delayTitleLabel, "DELAY", 11.0f, AC::textMuted,
                juce::Justification::centred);
     makeRotary (delayTextureSlider, AC::cyan);
-    // delayValueLabel not displayed — TextBoxCenter handles the live value
     makeLabel  (delayMinLabel, "0",   10.0f, AC::textDim, juce::Justification::centredLeft);
     makeLabel  (delayMaxLabel, "100", 10.0f, AC::textDim, juce::Justification::centredRight);
+
+    // Delay division selector (1:2 … 1:8)
+    for (const char* div : { "1:2", "1:3", "1:4", "1:5", "1:6", "1:7", "1:8" })
+        delayDivisionSelector.addItem (div, delayDivisionSelector.getNumItems() + 1);
+    delayDivisionSelector.setSelectedId (3, juce::dontSendNotification);  // "1:4" default
+    delayDivisionSelector.setJustificationType (juce::Justification::centred);
+    delayDivisionSelector.setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff0d0d12));
+    delayDivisionSelector.setColour (juce::ComboBox::outlineColourId,    AC::cyan);
+    delayDivisionSelector.setColour (juce::ComboBox::textColourId,       AC::cyan);
+    delayDivisionSelector.setColour (juce::ComboBox::arrowColourId,      AC::cyan);
+    addAndMakeVisible (delayDivisionSelector);
+
+    // Ping-pong toggle button
+    pingPongButton.setButtonText ("PING-PONG");
+    pingPongButton.setClickingTogglesState (true);
+    pingPongButton.setColour (juce::TextButton::buttonColourId,   AC::panelBg);
+    pingPongButton.setColour (juce::TextButton::buttonOnColourId, AC::cyan.withAlpha (0.25f));
+    pingPongButton.setColour (juce::TextButton::textColourOffId,  AC::textMuted);
+    pingPongButton.setColour (juce::TextButton::textColourOnId,   AC::cyan);
+    addAndMakeVisible (pingPongButton);
 
     // =========================================================================
     // MIX BAR (yellow)
@@ -230,7 +249,9 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     vibePhaserAttachment   = std::make_unique<SliderAttachment> (av, "vibe_phaser",    vibePhaserSlider);
     stereoWidthAttachment  = std::make_unique<SliderAttachment> (av, "stereo_width",   stereoWidthSlider);
     spaceReverbAttachment  = std::make_unique<SliderAttachment> (av, "space_reverb",   spaceReverbSlider);
-    delayTextureAttachment = std::make_unique<SliderAttachment> (av, "delay_texture",  delayTextureSlider);
+    delayTextureAttachment  = std::make_unique<SliderAttachment>   (av, "delay_texture",   delayTextureSlider);
+    delayDivisionAttachment = std::make_unique<ComboBoxAttachment> (av, "delay_division", delayDivisionSelector);
+    pingPongAttachment      = std::make_unique<ButtonAttachment>   (av, "delay_pingpong", pingPongButton);
     mixWetAttachment       = std::make_unique<SliderAttachment> (av, "mix_wet",        mixWetSlider);
 
     // Live mix value label
@@ -578,11 +599,19 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
 
         switch (mode)
         {
-            case 0: // Clear — hollow circle with a short tick at 12 o'clock
+            case 0: // Warm — small filled circle + 6 short radiating rays (sun glow)
             {
-                g.drawEllipse (cx - r*0.55f, cy - r*0.55f, r*1.10f, r*1.10f, 2.0f);
-                g.drawLine (cx, cy - r*0.55f - r*0.26f,
-                            cx, cy - r*0.55f,            2.0f);
+                const float innerR = r * 0.28f;
+                g.fillEllipse (cx - innerR, cy - innerR, innerR * 2.0f, innerR * 2.0f);
+                const int numRays = 6;
+                for (int i = 0; i < numRays; ++i)
+                {
+                    const float angle = (float)i * juce::MathConstants<float>::twoPi / (float)numRays;
+                    const float cosA  = std::cos (angle);
+                    const float sinA  = std::sin (angle);
+                    g.drawLine (cx + cosA * (innerR + r*0.14f), cy + sinA * (innerR + r*0.14f),
+                                cx + cosA * (innerR + r*0.46f), cy + sinA * (innerR + r*0.46f), 2.0f);
+                }
                 break;
             }
             case 1: // Tape — two hollow circles, straight line through their centres
@@ -606,37 +635,55 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
                     g.drawLine (px, pinY1, px, pinY2, 2.0f);
                 break;
             }
-            case 3: // Console — 3 vertical tracks with fader caps at different heights
+            case 3: // Air — 3 frequency-band bars (OTT multiband concept)
             {
-                const float tTop = cy - r*0.72f;
-                const float tBot = cy + r*0.72f;
-                const float spacing = r * 0.58f;
-                const float capW    = r * 0.32f;
-                const float capH    = r * 0.16f;
-                // cap Y positions staggered: high, low, mid
-                const float capYs[3] = { cy - r*0.30f, cy + r*0.28f, cy - r*0.05f };
+                // Three bars of increasing height: low (short), mid (medium), high (tall)
+                // Captures the "stacked bands" idea of multiband processing
+                const float barW  = r * 0.26f;
+                const float gap   = r * 0.16f;
+                const float bott  = cy + r * 0.58f;
+                const float hts[3] = { r * 0.55f, r * 0.82f, r * 1.05f };
                 for (int i = 0; i < 3; ++i)
                 {
-                    const float tx = cx + (i - 1) * spacing;
-                    g.drawLine  (tx, tTop, tx, tBot, 2.0f);
-                    g.drawRect  (juce::Rectangle<float> (tx - capW, capYs[i] - capH,
-                                                         capW*2.0f, capH*2.0f), 2.0f);
+                    const float bx = cx + (i - 1) * (barW * 2.0f + gap) - barW;
+                    g.drawRect (juce::Rectangle<float> (bx, bott - hts[i], barW * 2.0f, hts[i]), 1.8f);
                 }
                 break;
             }
-            case 4: // Grit — sharp zigzag (hard-clipped wave)
+            case 4: // Crunch — clipped sine wave (overdrive waveform)
             {
-                const float left = cx - r*0.82f;
-                const float segW = r * 1.64f / 4.0f;
-                const float hi   = cy - r*0.46f;
-                const float lo   = cy + r*0.46f;
-                juce::Path z;
-                z.startNewSubPath (left,           lo);
-                z.lineTo           (left + segW,   hi);
-                z.lineTo           (left + segW*2, lo);
-                z.lineTo           (left + segW*3, hi);
-                z.lineTo           (left + segW*4, lo);
-                g.strokePath (z, PS (2.0f, PS::mitered, PS::square));
+                // A sine that hard-clips at ±clip_y: looks like a rounded square wave
+                // with the sine tops flat — the classic "driven amp" waveform icon.
+                const float clipY = r * 0.38f;
+                const float xL    = cx - r * 0.82f;
+                const float xR    = cx + r * 0.82f;
+                const float amp   = r * 0.72f;  // sine amplitude before clipping
+
+                juce::Path wave;
+                const int steps = 48;
+                for (int i = 0; i <= steps; ++i)
+                {
+                    const float t  = (float)i / (float)steps;
+                    const float px = xL + t * (xR - xL);
+                    const float raw = amp * std::sin (t * juce::MathConstants<float>::twoPi);
+                    const float py = cy - juce::jlimit (-clipY, clipY, raw);
+                    if (i == 0) wave.startNewSubPath (px, py);
+                    else        wave.lineTo (px, py);
+                }
+                g.strokePath (wave, juce::PathStrokeType (2.0f,
+                    juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+                // Clip lines — dashed horizontals at clip level
+                const PS dashSt (1.2f, PS::curved, PS::rounded);
+                float dp[] = { r * 0.22f, r * 0.12f };
+                for (float sign : { -1.0f, 1.0f })
+                {
+                    juce::Path cl;
+                    cl.startNewSubPath (xL, cy + sign * clipY);
+                    cl.lineTo          (xR, cy + sign * clipY);
+                    juce::Path dashed;
+                    dashSt.createDashedStroke (dashed, cl, dp, 2);
+                    g.fillPath (dashed);
+                }
                 break;
             }
             default: break;
@@ -883,9 +930,29 @@ void AfroplugAudioProcessorEditor::resized()
                          reverbTitleLabel, spaceReverbSlider,
                          reverbMinLabel, reverbMaxLabel);
 
-        layoutKnobPanel (delayArea, delayPanelRect,
-                         delayTitleLabel, delayTextureSlider,
-                         delayMinLabel, delayMaxLabel);
+        // Delay panel — custom layout to fit division selector + ping-pong button
+        {
+            delayPanelRect   = delayArea.reduced (6, 6);
+            auto di          = delayPanelRect.reduced (12, 10);
+
+            delayTitleLabel.setBounds (di.removeFromTop (22));
+            di.removeFromTop (3);
+
+            // Division selector sits just below the title (matches mode selector style)
+            delayDivisionSelector.setBounds (di.removeFromTop (18));
+            di.removeFromTop (4);
+
+            // Bottom strip: 0 | PING-PONG button | 100
+            auto btm = di.removeFromBottom (22);
+            delayMinLabel.setBounds  (btm.removeFromLeft  (28));
+            delayMaxLabel.setBounds  (btm.removeFromRight (28));
+            pingPongButton.setBounds (btm.reduced (2, 1));
+            di.removeFromBottom (4);
+
+            // Rotary knob in remaining centre area (slightly smaller cap to fit new controls)
+            const int ks = juce::jmin (di.getWidth(), di.getHeight(), 130);
+            delayTextureSlider.setBounds (di.withSizeKeepingCentre (ks, ks));
+        }
 
         // AI panel
         aiPanelRect  = aiArea.reduced (6, 6);

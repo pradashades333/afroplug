@@ -74,6 +74,8 @@ private:
     std::atomic<float>* stereoWidthParam   { nullptr };   // SFX row
     std::atomic<float>* spaceReverbParam   { nullptr };   // REVERB knob
     std::atomic<float>* delayTextureParam  { nullptr };   // DELAY knob
+    std::atomic<float>* delayDivisionParam { nullptr };   // delay time division (1:2 … 1:8)
+    std::atomic<float>* pingPongParam      { nullptr };   // ping-pong on/off
     std::atomic<float>* mixWetParam        { nullptr };   // MIX bar
 
     //==============================================================================
@@ -100,6 +102,16 @@ private:
     // Real analog delay units have transformer / tape head HF roll-off in the loop.
     float delayFbLP[kMaxCh] {};
     float delayFbLPCoef     { 0.51f };   // default ≈ 5 kHz @ 44.1 kHz
+
+    // Air / OTT — 3-band crossover filter states (base sample rate, per channel).
+    // LP1 at 300 Hz isolates the low band; LP2 at 3 kHz splits mid from high.
+    float ottLP1[kMaxCh]  {};
+    float ottLP2[kMaxCh]  {};
+    float ottLP1Coef      { 0.042f };   // recomputed in prepareToPlay
+    float ottLP2Coef      { 0.355f };   // recomputed in prepareToPlay
+
+    // Crunch pre-emphasis / de-emphasis state (toneConsoleLoMid / toneConsoleHiShelf)
+    // — no extra state vars needed; filters are reused via toneConsoleLoMid / toneConsoleHiShelf
 
     // Stereo-width side-channel HP — removes sub-200 Hz from side so bass stays
     // mono-compatible. Prevents low-frequency phase cancellation on mono playback.

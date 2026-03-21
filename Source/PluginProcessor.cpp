@@ -29,7 +29,7 @@ AfroplugAudioProcessor::createParameterLayout()
     layout.add (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "tone_mode", 1 },
         "Tone Mode",
-        juce::StringArray { "Clear", "Tape", "Tube", "Console", "Grit" },
+        juce::StringArray { "Warm", "Tape", "Tube", "Air", "Crunch" },
         0));
 
     layout.add (std::make_unique<juce::AudioParameterChoice> (
@@ -43,6 +43,18 @@ AfroplugAudioProcessor::createParameterLayout()
     addParam ("stereo_width",   "Stereo Width",      50.0f);
     addParam ("space_reverb",   "Space / Reverb",     0.0f);
     addParam ("delay_texture",  "Delay / Texture",    0.0f);
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "delay_division", 1 },
+        "Delay Division",
+        juce::StringArray { "1:2", "1:3", "1:4", "1:5", "1:6", "1:7", "1:8" },
+        2));   // default index 2 = "1:4" (quarter note)
+
+    layout.add (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "delay_pingpong", 1 },
+        "Ping-Pong",
+        false));
+
     addParam ("mix_wet",        "Mix (Wet)",         100.0f);
 
     return layout;
@@ -63,8 +75,10 @@ AfroplugAudioProcessor::AfroplugAudioProcessor()
     vibePhaserParam   = apvts.getRawParameterValue ("vibe_phaser");
     stereoWidthParam  = apvts.getRawParameterValue ("stereo_width");
     spaceReverbParam  = apvts.getRawParameterValue ("space_reverb");
-    delayTextureParam = apvts.getRawParameterValue ("delay_texture");
-    mixWetParam       = apvts.getRawParameterValue ("mix_wet");
+    delayTextureParam  = apvts.getRawParameterValue ("delay_texture");
+    delayDivisionParam = apvts.getRawParameterValue ("delay_division");
+    pingPongParam      = apvts.getRawParameterValue ("delay_pingpong");
+    mixWetParam        = apvts.getRawParameterValue ("mix_wet");
 
     // Create preset directory on first run
     presetDir = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
@@ -110,8 +124,10 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     tapeHfLPCoef = 1.0f - std::exp (-twoPiOverSr * 9000.0f);   // 9 kHz  — tape air roll
     delayFbLPCoef= 1.0f - std::exp (-twoPiOverSr * 4500.0f);   // 4.5 kHz — analog repeat warmth
     sideHPR      = std::exp (-twoPiOverSr * 200.0f);           // 200 Hz HP pole — side-channel bass blocker
+    ottLP1Coef   = 1.0f - std::exp (-twoPiOverSr * 200.0f);   // Air low/mid split at 200 Hz
+    ottLP2Coef   = 1.0f - std::exp (-twoPiOverSr * 2000.0f);  // Air mid/high split at 2 kHz
     for (int i = 0; i < kMaxCh; ++i)
-        tapeHfLP[i] = delayFbLP[i] = 0.0f;
+        tapeHfLP[i] = delayFbLP[i] = ottLP1[i] = ottLP2[i] = 0.0f;
     sideHPx1 = sideHPy1 = 0.0f;
 
     // ── FDN Reverb — pre-allocate at max needed size for this sample rate ─────
@@ -180,7 +196,8 @@ void AfroplugAudioProcessor::releaseResources()
     safetyClipper.reset();
     oversampling.reset();
     for (int i = 0; i < kMaxCh; ++i)
-        tapeHfLP[i] = delayFbLP[i] = dcBlockX[i] = dcBlockY[i] = 0.0f;
+        tapeHfLP[i] = delayFbLP[i] = dcBlockX[i] = dcBlockY[i]
+                    = ottLP1[i] = ottLP2[i] = 0.0f;
     sideHPx1 = sideHPy1 = 0.0f;
     for (int i = 0; i < kFDNTaps; ++i)
     {
@@ -226,16 +243,20 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     juce::dsp::AudioBlock<float>              block   (buffer);
     juce::dsp::ProcessContextReplacing<float> context (block);
 
-    // Sync delay to host tempo (quarter note)
-    {
-        double currentBpm = 120.0;
-        if (auto* ph = getPlayHead())
-            if (auto positionInfo = ph->getPosition())
-                if (positionInfo->getBpm().hasValue())
-                    currentBpm = *positionInfo->getBpm();
+    // Read host tempo — used for both delay time and any future tempo-sync
+    double currentBpm = 120.0;
+    if (auto* ph = getPlayHead())
+        if (auto positionInfo = ph->getPosition())
+            if (positionInfo->getBpm().hasValue())
+                currentBpm = *positionInfo->getBpm();
 
-        const float quarterNoteSeconds = 60.0f / static_cast<float> (currentBpm);
-        const float delayInSamples     = quarterNoteSeconds * static_cast<float> (getSampleRate());
+    // Sync delay time to selected division (1:2 … 1:8)
+    // divIdx 0→denom 2 (half note), 2→denom 4 (quarter), 6→denom 8 (eighth)
+    {
+        const int   divIdx        = static_cast<int> (std::round (delayDivisionParam->load()));
+        const int   denom         = divIdx + 2;
+        const float delayInSamples = static_cast<float> (
+            60.0 / currentBpm * 4.0 / denom * getSampleRate());
         delay.setDelay (delayInSamples);
     }
 
@@ -296,19 +317,20 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 eqFilter1.process (context);
                 break;
             }
-            case 2: // Vocal — sweepable HP (20–80 Hz) + fixed high shelf (+0 to +6 dB at 10 kHz)
+            case 2: // Vocal — sweepable HP (30–200 Hz) + presence shelf (+3 to +12 dB at 8 kHz)
             {
-                // Filter 1: low-cut, sweep 20 Hz (knob=0) → 80 Hz (knob=100)
-                const float hpFreq = juce::jmap (eqSweep, 0.0f, 100.0f, 20.0f, 80.0f);
+                // Wider HP sweep: removes more mud/boom at high knob values
+                const float hpFreq = expMap (eqSweep, 30.0f, 200.0f);
                 eqFilter1.setType (juce::dsp::StateVariableTPTFilterType::highpass);
                 eqFilter1.setCutoffFrequency (hpFreq);
-                eqFilter1.setResonance (0.707f);
+                eqFilter1.setResonance (0.9f);   // slight resonant peak adds vocal presence
                 eqFilter1.process (context);
 
-                // Filter 2: high shelf at 10 kHz, Q=0.3, gain 1.0 (0 dB) → 1.995 (+6 dB)
-                const float shelfGain = juce::jmap (eqSweep, 0.0f, 100.0f, 1.0f, 1.995f);
+                // High shelf at 8 kHz: +3 dB (knob=0) → +12 dB (knob=100)
+                // Brings forward air, sibilance, and presence — makes vocals cut through
+                const float shelfGain = juce::jmap (eqSweep, 0.0f, 100.0f, 1.413f, 3.981f);
                 *eqFilter2.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-                    currentSampleRate, 10000.0f, 0.300f, shelfGain);
+                    currentSampleRate, 8000.0f, 0.5f, shelfGain);
                 eqFilter2.process (context);
                 break;
             }
@@ -340,22 +362,44 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         const float drive = colorVintage / 100.0f;
 
+        // ── Crunch pre-emphasis — boost ~2.2 kHz before saturation ──────────
+        // Pre-emphasis sharpens the mid-range going into the saturator so that
+        // the resulting harmonic distortion lands on meaningful upper harmonics
+        // (the "crack" and "bite" of a driven console channel strip).
+        // The complementary de-emphasis after the saturator removes the boost,
+        // leaving only the saturated harmonic content behind — net result is
+        // a focused crunch rather than a broad fuzz.
+        if (toneMode == 4 && drive > 0.01f)
+        {
+            const float peakGainLin = 1.0f + drive * 5.0f;  // up to +14 dB at 2.2 kHz
+            *toneConsoleLoMid.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
+                currentSampleRate, 2200.0f, 1.2f, peakGainLin);
+            toneConsoleLoMid.process (context);
+        }
+
         // ── Upsample to 4× ────────────────────────────────────────────────────
         auto osBlock = oversampling.processSamplesUp (block);
         const int osN = static_cast<int> (osBlock.getNumSamples());
 
         switch (toneMode)
         {
-            case 0: // Clear — barely-there saturation, stays transparent
+            case 0: // Warm — even-order (2nd harmonic) saturation, like a transformer
             {
+                // y = tanh(x + k·x²)
+                // The x² term is asymmetric → generates 2nd harmonic content (even-order).
+                // tanh provides a soft ceiling. Small-signal slope at x=0 is 1 (unity gain).
+                // DC offset from x² is removed by the DC blocker after downsample.
                 if (drive > 0.01f)
                 {
-                    const float g = 1.0f + drive * 0.08f;
+                    const float k = drive * 0.55f;
                     for (int ch = 0; ch < numCh; ++ch)
                     {
                         float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
                         for (int n = 0; n < osN; ++n)
-                            p[n] = std::tanh (p[n] * g) / g;
+                        {
+                            const float x = p[n];
+                            p[n] = std::tanh (x + k * x * x);
+                        }
                     }
                 }
                 break;
@@ -398,39 +442,27 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 break;
             }
 
-            case 3: // Console — very soft saturation; IIR EQ applied after downsample
-            {
-                const float consoleDrive = 1.0f + drive * 1.5f;
-                const float normFactor   = 1.0f / consoleDrive;   // small-signal unity gain
-                for (int ch = 0; ch < numCh; ++ch)
-                {
-                    float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
-                    for (int n = 0; n < osN; ++n)
-                        p[n] = std::tanh (p[n] * consoleDrive) * normFactor;
-                }
+            case 3: // Air — oversampled portion is pass-through.
+                    // The 3-band OTT-style processing runs at base rate (after downsample)
+                    // because the crossover filter coefficients are computed at base SR.
                 break;
-            }
 
-            case 4: // Grit — hard clip ONLY at oversampled rate.
-            // Bit crush happens after downsample (base rate) so it sounds correct:
-            // quantisation noise should be at the output sample rate, not 4× it.
-            //
-            // Do NOT divide by threshold — that boosts all content below the clip
-            // point by up to +9 dB at full drive. Just clamp; quiet signals pass
-            // through unchanged and only peaks get bitten off.
-            {
+            case 4: // Crunch — hard-driven tanh saturation, aggressive mid crunch.
+                    // Heavy drive (k up to 9×) hard-clips the signal, generating rich
+                    // odd and even harmonics. Normalised at small-signal unity so no
+                    // volume jump. Pre/de-emphasis shapes the harmonic content around 2 kHz.
                 if (drive > 0.01f)
                 {
-                    const float threshold = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 0.35f);
+                    const float k    = 1.0f + drive * 8.0f;
+                    const float norm = 1.0f / k;
                     for (int ch = 0; ch < numCh; ++ch)
                     {
                         float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
                         for (int n = 0; n < osN; ++n)
-                            p[n] = juce::jlimit (-threshold, threshold, p[n]);
+                            p[n] = std::tanh (p[n] * k) * norm;
                     }
                 }
                 break;
-            }
 
             default: break;
         }
@@ -456,8 +488,8 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
-        // Tape HF roll — 1-pole LP that darkens proportionally with drive.
-        // a=1 at drive=0 (passthrough) → a=tapeHfLPCoef at drive=1 (9 kHz roll).
+        // ── Tape HF roll ──────────────────────────────────────────────────────
+        // 1-pole LP that darkens proportionally with drive (mode 1 only).
         if (toneMode == 1)
         {
             const float a = 1.0f - drive * (1.0f - tapeHfLPCoef);
@@ -472,39 +504,73 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
-        // Grit bit crush at base rate — quantisation noise belongs at the output SR.
-        if (toneMode == 4 && drive > 0.01f)
+        // ── Air / OTT — 3-band upward-companding saturation ───────────────
+        // True OTT character: each band is processed with a transfer curve that
+        // expands quiet signals AND compresses loud ones simultaneously.
+        //
+        // Key technique: normalise at a reference amplitude (-20 dBFS = 0.10).
+        //   • Signals quieter than the ref get EXPANDED (gain > 1) — things that
+        //     were buried in the mix get pulled forward
+        //   • Signals louder than the ref get COMPRESSED (gain < 1) — peaks squash
+        //   • The combination is the hyper-dense "everything is present" OTT character
+        //
+        // Per-band aggressiveness:
+        //   Low  (< 200 Hz) — moderate, keeps bass punchy without blowing up subs
+        //   Mid  (200 Hz–2 kHz) — very heavy, OTT's signature "punch in the face"
+        //   High (> 2 kHz)  — heavy + slight lift for that bright shimmering air
+        if (toneMode == 3 && drive > 0.01f)
         {
-            const float bitsRemoved = drive * 3.0f;
-            const float quantSteps  = std::pow (2.0f, std::max (1.0f, 16.0f - bitsRemoved));
-            for (int ch = 0; ch < numCh; ++ch)
+            constexpr float kRef = 0.10f;   // reference amplitude (-20 dBFS)
+
+            // Per-band drive amounts — kept moderate so upstream EQ boosts
+            // (e.g. Vocal shelf +12 dB) don't push the output into ear-rape territory.
+            // Mid is still the most aggressive band (OTT punch) but capped sensibly.
+            const float kLow  = 1.0f + drive * 4.0f;
+            const float kMid  = 1.0f + drive * 8.0f;
+            const float kHigh = 1.0f + drive * 6.0f;
+
+            // Normalisation factors: output equals kRef at input == kRef
+            const float nLow  = kRef / std::tanh (kRef * kLow);
+            const float nMid  = kRef / std::tanh (kRef * kMid);
+            const float nHigh = kRef / std::tanh (kRef * kHigh);
+
+            // Reduced makeup — previous 0.7× headroom multiplier was stacking on top
+            // of EQ boosts and causing loudness spikes when used with Vocal preset.
+            const float makeup = 1.0f + drive * 0.30f;
+
+            for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
             {
                 float* p = block.getChannelPointer (static_cast<size_t> (ch));
                 for (int n = 0; n < numSa; ++n)
-                    p[n] = std::round (p[n] * quantSteps) / quantSteps;
+                {
+                    const float x = p[n];
+
+                    ottLP1[ch] += ottLP1Coef * (x - ottLP1[ch]);   // 200 Hz LP
+                    ottLP2[ch] += ottLP2Coef * (x - ottLP2[ch]);   // 2 kHz LP
+
+                    const float low  = ottLP1[ch];
+                    const float mid  = ottLP2[ch] - ottLP1[ch];
+                    const float high = x - ottLP2[ch];
+
+                    const float pLow  = std::tanh (low  * kLow)  * nLow;
+                    const float pMid  = std::tanh (mid  * kMid)  * nMid;
+                    const float pHigh = std::tanh (high * kHigh) * nHigh;
+
+                    p[n] = (pLow + pMid + pHigh) * makeup;
+                }
             }
         }
 
-        // Console IIR EQ runs at base rate (coefficients are computed at base SR)
-        if (toneMode == 3)
+        // ── Crunch de-emphasis — shelve above ~4 kHz post-saturation ─────
+        // Cuts the top end that was boosted by pre-emphasis, leaving a natural
+        // warm crunch rather than a harsh fizz. The high-shelf dips above 4 kHz,
+        // pulling back the brittle overtones while keeping the punchy mid crunch.
+        if (toneMode == 4 && drive > 0.01f)
         {
-            *toneConsoleLoMid.state = *juce::dsp::IIR::Coefficients<float>::makePeakFilter (
-                currentSampleRate, 250.0f, 0.5f, 1.0f + drive * 0.8f);
-            toneConsoleLoMid.process (context);
-
+            const float shelfGainLin = 1.0f / (1.0f + drive * 3.0f);  // cut HF by up to -12 dB
             *toneConsoleHiShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-                currentSampleRate, 8000.0f, 0.7f, 1.0f + drive * 0.4f);
+                currentSampleRate, 4000.0f, 0.7f, shelfGainLin);
             toneConsoleHiShelf.process (context);
-
-            // Compensate for IIR boost: the peak adds up to +4.7 dB and the shelf
-            // up to +3.2 dB — apply inverse gain so overall level stays stable.
-            const float eqComp = 1.0f / (1.0f + drive * 0.55f);
-            for (int ch = 0; ch < numCh; ++ch)
-            {
-                float* p = block.getChannelPointer (static_cast<size_t> (ch));
-                for (int n = 0; n < numSa; ++n)
-                    p[n] *= eqComp;
-            }
         }
     }
 
@@ -529,26 +595,47 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         phaser.process            (context);
     }
 
-    // 2. Delay (delay_texture) — tempo-synced; LP-filtered feedback = analog warmth.
-    // Each repeat passes through a ~4.5 kHz low-pass so high harmonics fade away
-    // naturally, exactly like an old tape echo or bucket-brigade delay unit.
-    // Feedback capped at 0.65 — safer headroom with the extra LP energy shaping.
+    // 2. Delay (delay_texture) — tempo-synced to selected division.
+    // LP-filtered feedback: each repeat gets progressively darker (tape/BBD warmth).
+    // Ping-pong mode: output of L feeds into R delay input and vice-versa, so the
+    // signal bounces left-right across each repeat.
     if (delayTexture > 0.1f)
     {
-        const float feedback = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.65f);
-        const float wetAmt   = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.40f);
+        const float feedback  = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.65f);
+        const float wetAmt    = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.40f);
+        const bool  pingPong  = numCh >= 2 && pingPongParam->load() > 0.5f;
 
-        for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
+        if (pingPong)
         {
-            float* ptr = block.getChannelPointer (static_cast<size_t> (ch));
+            // Cross-feed: L delay reads → goes into R delay write, R → L
+            float* L = buffer.getWritePointer (0);
+            float* R = buffer.getWritePointer (1);
             for (int n = 0; n < numSa; ++n)
             {
-                const float in  = ptr[n];
-                const float del = delay.popSample (ch);
-                // LP filter the feedback signal so each repeat gets progressively darker
-                delayFbLP[ch] += delayFbLPCoef * (del * feedback - delayFbLP[ch]);
-                delay.pushSample (ch, in + delayFbLP[ch]);
-                ptr[n] = in + del * wetAmt;
+                const float dL = delay.popSample (0);
+                const float dR = delay.popSample (1);
+                // Feedback LP: R output darkens into L, L output darkens into R
+                delayFbLP[0] += delayFbLPCoef * (dR * feedback - delayFbLP[0]);
+                delayFbLP[1] += delayFbLPCoef * (dL * feedback - delayFbLP[1]);
+                delay.pushSample (0, L[n] + delayFbLP[0]);
+                delay.pushSample (1, R[n] + delayFbLP[1]);
+                L[n] += dL * wetAmt;
+                R[n] += dR * wetAmt;
+            }
+        }
+        else
+        {
+            for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
+            {
+                float* ptr = block.getChannelPointer (static_cast<size_t> (ch));
+                for (int n = 0; n < numSa; ++n)
+                {
+                    const float in  = ptr[n];
+                    const float del = delay.popSample (ch);
+                    delayFbLP[ch] += delayFbLPCoef * (del * feedback - delayFbLP[ch]);
+                    delay.pushSample (ch, in + delayFbLP[ch]);
+                    ptr[n] = in + del * wetAmt;
+                }
             }
         }
     }
