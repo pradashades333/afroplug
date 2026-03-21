@@ -244,9 +244,21 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     refreshValueLabels();
 
     // =========================================================================
-    // AI button — analyse live audio and apply smart preset
+    // AI button — scan live audio, animate, then show the detected type
     // =========================================================================
-    aiButton.onClick = [this]() { processorRef.triggerAIAnalysis(); };
+    aiButton.onClick = [this]()
+    {
+        if (aiAnimating) return;  // debounce while animation is running
+
+        // Apply preset immediately (settings change right away),
+        // but show visual feedback over the next ~2 s via the timer.
+        aiResultText = processorRef.triggerAIAnalysis();
+        aiAnimating  = true;
+        aiAnimFrame  = 0;
+        aiAnalyzeLabel.setColour (juce::Label::textColourId, AC::textMuted);
+        aiAnalyzeLabel.setText   ("SCANNING...", juce::dontSendNotification);
+        startTimerHz (30);
+    };
 
     setResizable (true, true);
     setResizeLimits (540, 316, 1800, 1056);
@@ -255,6 +267,7 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
 
 AfroplugAudioProcessorEditor::~AfroplugAudioProcessorEditor()
 {
+    stopTimer();
     // Clear LookAndFeel pointers before the LAF instances are destroyed
     aiButton.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
@@ -266,6 +279,31 @@ void AfroplugAudioProcessorEditor::refreshValueLabels()
     mixValueLabel.setText (
         juce::String ((int) std::round (mixWetSlider.getValue())) + "%",
         juce::dontSendNotification);
+}
+
+//==============================================================================
+void AfroplugAudioProcessorEditor::timerCallback()
+{
+    ++aiAnimFrame;
+
+    // Frame 30 (~1 s): spinner done → show detected type in yellow
+    if (aiAnimFrame == 30)
+    {
+        aiAnalyzeLabel.setColour (juce::Label::textColourId, AC::yellow);
+        aiAnalyzeLabel.setText   (aiResultText, juce::dontSendNotification);
+    }
+
+    // Frame 60 (~2 s): reset label to default
+    if (aiAnimFrame >= 60)
+    {
+        stopTimer();
+        aiAnimating = false;
+        aiAnimFrame = 0;
+        aiAnalyzeLabel.setColour (juce::Label::textColourId, AC::textMuted);
+        aiAnalyzeLabel.setText   ("ANALYZE", juce::dontSendNotification);
+    }
+
+    repaint (aiPanelRect);  // repaint only the AI section
 }
 
 //==============================================================================
@@ -662,6 +700,70 @@ void AfroplugAudioProcessorEditor::paint (juce::Graphics& g)
         g.setColour (juce::Colour (0xffffd600));
         g.drawEllipse (icx - off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);
         g.drawEllipse (icx + off - r, icy - r, r * 2.0f, r * 2.0f, 2.0f);
+    }
+
+    // =========================================================================
+    // AI button decorations — drawn on top of everything else
+    //
+    //   Idle:      single thin yellow ring just outside the button circle.
+    //   Scanning:  outer spinning arc (0–30 frames, 0–360°) +
+    //              inner counter-spin (dim, for depth) +
+    //              subtle bloom behind circle.
+    //   Result:    spinner fades; ring remains.
+    // =========================================================================
+    {
+        using MC = juce::MathConstants<float>;
+        const auto  bc  = aiButton.getBoundsInParent().toFloat();
+        const float sz  = juce::jmin (bc.getWidth(), bc.getHeight());
+        const float cx  = bc.getCentreX();
+        const float cy  = bc.getCentreY();
+        const float btnR = sz * 0.50f;
+
+        // Always-on idle ring (slightly outside the button's own yellow ring)
+        g.setColour (AC::yellow.withAlpha (0.18f));
+        g.drawEllipse (cx - btnR - 5.0f, cy - btnR - 5.0f,
+                       (btnR + 5.0f) * 2.0f, (btnR + 5.0f) * 2.0f, 1.0f);
+
+        if (aiAnimating)
+        {
+            // Bloom behind button
+            const float bloomAlpha = aiAnimFrame < 30
+                ? juce::jmap ((float)aiAnimFrame, 0.0f, 30.0f, 0.0f, 0.18f)
+                : juce::jmap ((float)aiAnimFrame, 30.0f, 60.0f, 0.18f, 0.0f);
+            g.setColour (AC::yellow.withAlpha (bloomAlpha));
+            g.fillEllipse (cx - btnR - 12.0f, cy - btnR - 12.0f,
+                           (btnR + 12.0f) * 2.0f, (btnR + 12.0f) * 2.0f);
+
+            // Alpha: full during spin, fades during result display
+            const float alpha = aiAnimFrame < 30
+                ? 1.0f
+                : juce::jmap ((float)aiAnimFrame, 30.0f, 60.0f, 1.0f, 0.0f);
+
+            const float spinR = btnR + 9.0f;
+            const float sweep = MC::twoPi * 0.36f;   // 130° arc
+
+            // Primary spinner arc — one full revolution in 30 frames
+            {
+                const float angle = (aiAnimFrame / 30.0f) * MC::twoPi - MC::halfPi;
+                juce::Path arc;
+                arc.addCentredArc (cx, cy, spinR, spinR, 0.0f,
+                                   angle, angle + sweep, true);
+                g.setColour (AC::yellow.withAlpha (alpha * 0.92f));
+                g.strokePath (arc, juce::PathStrokeType (2.5f,
+                    juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+
+            // Counter-rotating dim arc (inner) — gives a gyroscope / scanner feel
+            {
+                const float angle2 = -(aiAnimFrame / 20.0f) * MC::twoPi - MC::halfPi;
+                juce::Path arc2;
+                arc2.addCentredArc (cx, cy, spinR * 0.68f, spinR * 0.68f, 0.0f,
+                                    angle2, angle2 + sweep * 0.55f, true);
+                g.setColour (AC::yellow.withAlpha (alpha * 0.35f));
+                g.strokePath (arc2, juce::PathStrokeType (1.5f,
+                    juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+        }
     }
 
 }

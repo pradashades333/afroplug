@@ -684,9 +684,9 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 //==============================================================================
 // AI Analysis — called from the UI thread (button click)
-// Reads live RMS / ZCR metrics and applies a heuristic preset to the APVTS.
-// setValueNotifyingHost expects a 0.0–1.0 normalised value.
-void AfroplugAudioProcessor::triggerAIAnalysis()
+// Reads live RMS / ZCR metrics, applies a heuristic preset, and returns a
+// short label describing the detected signal type for the UI to display.
+juce::String AfroplugAudioProcessor::triggerAIAnalysis()
 {
     const float rms = currentRMS.load();
     const float zcr = currentZCR.load();
@@ -696,47 +696,69 @@ void AfroplugAudioProcessor::triggerAIAnalysis()
         apvts.getParameter (id)->setValueNotifyingHost (val01);
     };
 
-    // Helper: map a 0–100 knob value to 0.0–1.0 for a plain 0-100 parameter
-    auto norm = [] (float pct) { return pct / 100.0f; };
-
-    // Helper: normalise a choice index into 0.0–1.0 (5 choices → steps 0/4 … 4/4)
-    auto modeNorm = [] (int idx) { return static_cast<float> (idx) / 4.0f; };
+    auto norm     = [] (float pct) { return pct / 100.0f; };
+    auto modeNorm = [] (int idx)   { return static_cast<float> (idx) / 4.0f; };
 
     if (zcr > 0.15f)
     {
-        // Condition A — High ZCR: likely Vocals / Bright Leads
-        set ("eq_mode",      modeNorm (2));       // Vocal
-        set ("eq_sweep",     norm (70.0f));
-        set ("space_reverb", norm (60.0f));
-        set ("delay_texture",norm (30.0f));
-        set ("vibe_phaser",  norm (20.0f));
+        // High ZCR: vocals / bright leads — air-boost EQ, lush verb, subtle delay
+        set ("eq_mode",       modeNorm (2));
+        set ("eq_sweep",      norm (70.0f));
+        set ("tone_mode",     modeNorm (0));   // Clear
+        set ("color_vintage", norm (35.0f));
+        set ("space_reverb",  norm (60.0f));
+        set ("reverb_mode",   modeNorm (1));   // Plate
+        set ("delay_texture", norm (30.0f));
+        set ("vibe_phaser",   norm (20.0f));
+        set ("stereo_width",  norm (60.0f));
+        set ("mix_wet",       norm (85.0f));
+        return "VOCALS";
     }
-    else if (zcr < 0.05f && rms > 0.15f)
+
+    if (zcr < 0.05f && rms > 0.15f)
     {
-        // Condition B — Low ZCR + High RMS: likely Bass / Drums
-        set ("eq_mode",      modeNorm (0));       // Low Cut
-        set ("eq_sweep",     norm (20.0f));
-        set ("color_vintage",norm (80.0f));
-        set ("space_reverb", norm (10.0f));
-        set ("delay_texture",norm (0.0f));
+        // Low ZCR + high RMS: bass / kick — tight HP, tape saturation, no reverb tail
+        set ("eq_mode",       modeNorm (0));   // Low Cut
+        set ("eq_sweep",      norm (20.0f));
+        set ("tone_mode",     modeNorm (1));   // Tape
+        set ("color_vintage", norm (75.0f));
+        set ("space_reverb",  norm (10.0f));
+        set ("reverb_mode",   modeNorm (0));   // Studio
+        set ("delay_texture", norm (0.0f));
+        set ("vibe_phaser",   norm (0.0f));
+        set ("stereo_width",  norm (45.0f));
+        set ("mix_wet",       norm (90.0f));
+        return "BASS";
     }
-    else if (rms < 0.05f)
+
+    if (rms < 0.05f)
     {
-        // Condition C — Mid ZCR + Low RMS: likely Pads / Quiet Guitars
-        set ("eq_mode",      modeNorm (4));       // Underwater
-        set ("eq_sweep",     norm (50.0f));
-        set ("space_reverb", norm (80.0f));
-        set ("delay_texture",norm (70.0f));
-        set ("stereo_width", norm (90.0f));
+        // Quiet + mid ZCR: pads / ambient — wide, long reverb, drifting delay
+        set ("eq_mode",       modeNorm (4));   // Underwater
+        set ("eq_sweep",      norm (50.0f));
+        set ("tone_mode",     modeNorm (0));   // Clear
+        set ("color_vintage", norm (30.0f));
+        set ("space_reverb",  norm (80.0f));
+        set ("reverb_mode",   modeNorm (3));   // Hall
+        set ("delay_texture", norm (65.0f));
+        set ("vibe_phaser",   norm (35.0f));
+        set ("stereo_width",  norm (85.0f));
+        set ("mix_wet",       norm (75.0f));
+        return "PADS";
     }
-    else
-    {
-        // Condition D — Catch-all / default vibe
-        set ("eq_mode",      modeNorm (1));       // High Cut
-        set ("eq_sweep",     norm (40.0f));
-        set ("color_vintage",norm (50.0f));
-        set ("space_reverb", norm (40.0f));
-    }
+
+    // Mid ZCR + mid RMS: melodic / guitars — balanced treatment
+    set ("eq_mode",       modeNorm (1));   // High Cut
+    set ("eq_sweep",      norm (40.0f));
+    set ("tone_mode",     modeNorm (3));   // Console
+    set ("color_vintage", norm (50.0f));
+    set ("space_reverb",  norm (45.0f));
+    set ("reverb_mode",   modeNorm (2));   // Chamber
+    set ("delay_texture", norm (25.0f));
+    set ("vibe_phaser",   norm (10.0f));
+    set ("stereo_width",  norm (55.0f));
+    set ("mix_wet",       norm (80.0f));
+    return "MELODY";
 }
 
 //==============================================================================

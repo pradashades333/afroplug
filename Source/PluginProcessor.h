@@ -47,8 +47,9 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
-    // Called from the UI thread when the AI button is pressed
-    void triggerAIAnalysis();
+    // Called from the UI thread when the AI button is pressed.
+    // Returns a short descriptor of the detected signal type (e.g. "VOCALS").
+    juce::String triggerAIAnalysis();
 
     // Live audio-feature meters (updated every processBlock, read on UI thread)
     std::atomic<float> currentRMS { 0.0f };

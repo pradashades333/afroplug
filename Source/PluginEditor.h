@@ -90,36 +90,68 @@ public:
 
 //==============================================================================
 // AIButtonLookAndFeel
-//   - Draws the AI button as a perfect filled circle, no border, yellow text
+//   - Circle fill with yellow ring border
+//   - Hover: glow bloom; Down: lighter fill
+//   - "AI" text with soft glow on hover
 //==============================================================================
 class AIButtonLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
     void drawButtonBackground (juce::Graphics& g, juce::Button& button,
                                const juce::Colour& /*bgColour*/,
-                               bool /*highlighted*/, bool /*down*/) override
+                               bool highlighted, bool down) override
     {
-        auto  b   = button.getLocalBounds().toFloat();
-        float sz  = juce::jmin (b.getWidth(), b.getHeight());
-        auto  circ = juce::Rectangle<float> (b.getCentreX() - sz * 0.5f,
-                                             b.getCentreY() - sz * 0.5f, sz, sz);
-        g.setColour (juce::Colour (0xff151515));
+        const auto  b    = button.getLocalBounds().toFloat();
+        const float sz   = juce::jmin (b.getWidth(), b.getHeight());
+        const auto  circ = juce::Rectangle<float> (b.getCentreX() - sz * 0.5f,
+                                                    b.getCentreY() - sz * 0.5f, sz, sz);
+
+        // Hover / press bloom behind circle
+        if (highlighted || down)
+        {
+            const float alpha = down ? 0.28f : 0.16f;
+            g.setColour (juce::Colour (0xfff0c040).withAlpha (alpha));
+            g.fillEllipse (circ.expanded (6.0f));
+        }
+
+        // Circle fill — slightly lighter on hover/down
+        const juce::Colour fillCol = down       ? juce::Colour (0xff202025)
+                                   : highlighted ? juce::Colour (0xff1a1a20)
+                                                 : juce::Colour (0xff151518);
+        g.setColour (fillCol);
         g.fillEllipse (circ);
-        // No outline drawn
+
+        // Yellow ring: brighter on hover, dimmer at rest
+        const float ringAlpha = down ? 0.90f : highlighted ? 0.70f : 0.38f;
+        g.setColour (juce::Colour (0xfff0c040).withAlpha (ringAlpha));
+        g.drawEllipse (circ.reduced (1.0f), 1.5f);
     }
 
     void drawButtonText (juce::Graphics& g, juce::TextButton& button,
-                         bool /*highlighted*/, bool /*down*/) override
+                         bool highlighted, bool /*down*/) override
     {
+        const auto bounds = button.getLocalBounds();
+
+        // Soft glow behind text on hover
+        if (highlighted)
+        {
+            g.setColour (juce::Colour (0xfff0c040).withAlpha (0.22f));
+            g.setFont   (juce::FontOptions (22.0f, juce::Font::bold));
+            for (auto [dx, dy] : std::initializer_list<std::pair<int,int>> {{-1,0},{1,0},{0,-1},{0,1}})
+                g.drawText ("AI", bounds.translated (dx, dy),
+                            juce::Justification::centred, false);
+        }
+
+        // Primary text
         g.setColour (juce::Colour (0xffffd600));
         g.setFont   (juce::FontOptions (20.0f, juce::Font::bold));
-        g.drawText  ("AI", button.getLocalBounds(),
-                     juce::Justification::centred, false);
+        g.drawText  ("AI", bounds, juce::Justification::centred, false);
     }
 };
 
 //==============================================================================
-class AfroplugAudioProcessorEditor : public juce::AudioProcessorEditor
+class AfroplugAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                      private juce::Timer
 {
 public:
     explicit AfroplugAudioProcessorEditor (AfroplugAudioProcessor&);
@@ -222,6 +254,15 @@ private:
     // =========================================================================
     CustomLookAndFeel   customLaf;
     AIButtonLookAndFeel aiButtonLaf;
+
+    // =========================================================================
+    // AI button animation state
+    // =========================================================================
+    bool         aiAnimating  { false };
+    int          aiAnimFrame  { 0 };
+    juce::String aiResultText;
+
+    void timerCallback() override;
 
     // =========================================================================
     // Helpers
