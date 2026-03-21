@@ -89,6 +89,17 @@ private:
     float dcBlockX[kMaxCh] {};
     float dcBlockY[kMaxCh] {};
 
+    // Tape HF roll-off — 1-pole LP applied post-saturation.
+    // Simulates the natural high-frequency darkening of magnetic tape.
+    // Coefficient computed from sample rate in prepareToPlay.
+    float tapeHfLP[kMaxCh]  {};
+    float tapeHfLPCoef      { 0.72f };   // default ≈ 9 kHz @ 44.1 kHz
+
+    // Delay feedback LP — filters the feedback signal to remove harsh HF buildup.
+    // Real analog delay units have transformer / tape head HF roll-off in the loop.
+    float delayFbLP[kMaxCh] {};
+    float delayFbLPCoef     { 0.51f };   // default ≈ 5 kHz @ 44.1 kHz
+
     //==============================================================================
     // DSP modules (juce::dsp namespace)
     //

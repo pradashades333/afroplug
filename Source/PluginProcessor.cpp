@@ -104,6 +104,14 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     for (int i = 0; i < kMaxCh; ++i)
         dcBlockX[i] = dcBlockY[i] = 0.0f;
 
+    // Precompute LP coefficients scaled to the actual sample rate.
+    // Formula: a = 1 - exp(-2π·fc/fs)  →  y += a·(x - y)
+    const float twoPiOverSr = juce::MathConstants<float>::twoPi / (float) sampleRate;
+    tapeHfLPCoef = 1.0f - std::exp (-twoPiOverSr * 9000.0f);   // 9 kHz  — tape air roll
+    delayFbLPCoef= 1.0f - std::exp (-twoPiOverSr * 4500.0f);   // 4.5 kHz — analog repeat warmth
+    for (int i = 0; i < kMaxCh; ++i)
+        tapeHfLP[i] = delayFbLP[i] = 0.0f;
+
     // ── FDN Reverb — pre-allocate at max needed size for this sample rate ─────
     // Base delay lengths (samples at 44.1 kHz). Chosen as coprime values so
     // echo density builds smoothly without periodic clustering.
@@ -169,6 +177,8 @@ void AfroplugAudioProcessor::releaseResources()
     toneConsoleHiShelf.reset();
     safetyClipper.reset();
     oversampling.reset();
+    for (int i = 0; i < kMaxCh; ++i)
+        tapeHfLP[i] = delayFbLP[i] = dcBlockX[i] = dcBlockY[i] = 0.0f;
     for (int i = 0; i < kFDNTaps; ++i)
     {
         std::fill (fdnL[i].buf.begin(), fdnL[i].buf.end(), 0.0f);
@@ -395,23 +405,18 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 break;
             }
 
-            case 4: // Grit — hard clip + bit crush; oversampling keeps it punchy, not fizzy
+            case 4: // Grit — hard clip ONLY at oversampled rate.
+            // Bit crush happens after downsample (base rate) so it sounds correct:
+            // quantisation noise should be at the output sample rate, not 4× it.
             {
                 if (drive > 0.01f)
                 {
-                    const float threshold   = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 0.35f);
-                    const float bitsRemoved = drive * 3.0f;
-                    const float quantSteps  = std::pow (2.0f, std::max (1.0f, 16.0f - bitsRemoved));
+                    const float threshold = juce::jmap (drive, 0.0f, 1.0f, 1.0f, 0.35f);
                     for (int ch = 0; ch < numCh; ++ch)
                     {
                         float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
                         for (int n = 0; n < osN; ++n)
-                        {
-                            float x = juce::jlimit (-threshold, threshold, p[n]) / threshold;
-                            if (bitsRemoved > 0.5f)
-                                x = std::round (x * quantSteps) / quantSteps;
-                            p[n] = x;
-                        }
+                            p[n] = juce::jlimit (-threshold, threshold, p[n]) / threshold;
                     }
                 }
                 break;
@@ -440,6 +445,35 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             }
         }
 
+        // Tape HF roll — 1-pole LP that darkens proportionally with drive.
+        // a=1 at drive=0 (passthrough) → a=tapeHfLPCoef at drive=1 (9 kHz roll).
+        if (toneMode == 1)
+        {
+            const float a = 1.0f - drive * (1.0f - tapeHfLPCoef);
+            for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
+            {
+                float* p = block.getChannelPointer (static_cast<size_t> (ch));
+                for (int n = 0; n < numSa; ++n)
+                {
+                    tapeHfLP[ch] += a * (p[n] - tapeHfLP[ch]);
+                    p[n] = tapeHfLP[ch];
+                }
+            }
+        }
+
+        // Grit bit crush at base rate — quantisation noise belongs at the output SR.
+        if (toneMode == 4 && drive > 0.01f)
+        {
+            const float bitsRemoved = drive * 3.0f;
+            const float quantSteps  = std::pow (2.0f, std::max (1.0f, 16.0f - bitsRemoved));
+            for (int ch = 0; ch < numCh; ++ch)
+            {
+                float* p = block.getChannelPointer (static_cast<size_t> (ch));
+                for (int n = 0; n < numSa; ++n)
+                    p[n] = std::round (p[n] * quantSteps) / quantSteps;
+            }
+        }
+
         // Console IIR EQ runs at base rate (coefficients are computed at base SR)
         if (toneMode == 3)
         {
@@ -453,31 +487,43 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // 1. Phaser (vibe_phaser) -- subtle sweep, fully off at 0
+    // 1. Phaser (vibe_phaser) — lush vintage sweep
+    // Mix capped at 0.45 (0.6 was too heavy and obvious).
+    // Center frequency sweeps 400→1200 Hz with the knob for tonal variation.
+    // Feedback adds resonance to the phase notches (thickens the effect).
     {
-        const float mix   = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f, 0.6f);
-        const float depth = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f, 0.5f);
-        const float rate  = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.1f, 2.0f);
-        phaser.setMix   (mix);
-        phaser.setDepth (depth);
-        phaser.setRate  (rate);
-        phaser.process  (context);
+        const float mix  = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.45f);
+        const float dep  = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.60f);
+        const float rate = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.05f,  1.20f);
+        const float cf   = juce::jmap (vibePhaser, 0.0f, 100.0f, 400.0f, 1200.0f);
+        const float fb   = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.35f);
+        phaser.setMix             (mix);
+        phaser.setDepth           (dep);
+        phaser.setRate            (rate);
+        phaser.setCentreFrequency (cf);
+        phaser.setFeedback        (fb);
+        phaser.process            (context);
     }
 
-    // 2. Delay (delay_texture) — tempo-synced to 1/4 note; knob controls feedback + wet
+    // 2. Delay (delay_texture) — tempo-synced; LP-filtered feedback = analog warmth.
+    // Each repeat passes through a ~4.5 kHz low-pass so high harmonics fade away
+    // naturally, exactly like an old tape echo or bucket-brigade delay unit.
+    // Feedback capped at 0.65 — safer headroom with the extra LP energy shaping.
     if (delayTexture > 0.1f)
     {
-        const float feedback = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.70f);
+        const float feedback = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.65f);
         const float wetAmt   = juce::jmap (delayTexture, 0.0f, 100.0f, 0.0f, 0.40f);
 
-        for (int ch = 0; ch < numCh; ++ch)
+        for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
         {
             float* ptr = block.getChannelPointer (static_cast<size_t> (ch));
             for (int n = 0; n < numSa; ++n)
             {
                 const float in  = ptr[n];
                 const float del = delay.popSample (ch);
-                delay.pushSample (ch, in + del * feedback);
+                // LP filter the feedback signal so each repeat gets progressively darker
+                delayFbLP[ch] += delayFbLPCoef * (del * feedback - delayFbLP[ch]);
+                delay.pushSample (ch, in + delayFbLP[ch]);
                 ptr[n] = in + del * wetAmt;
             }
         }
@@ -543,27 +589,43 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             fdnR[i].delayLen = juce::jmax (1, static_cast<int> (kBase[i] * srRatio * fdnScale * 1.031));
         }
 
-        // Per-sample FDN step (shared between L and R via lambda)
+        // Per-sample FDN step.
+        // Correct signal order: read → Householder mix → damp → decay → write.
+        // The previous implementation damped before mixing, which coloured the
+        // taps individually instead of the cross-mixed signal — giving a thinner tail.
         auto fdnStep = [&] (std::array<FDNLine, kFDNTaps>& fdn, float input) -> float
         {
-            float s[kFDNTaps];
+            // 1. Read all taps
+            float d[kFDNTaps];
             for (int i = 0; i < kFDNTaps; ++i)
             {
                 const int sz = static_cast<int> (fdn[i].buf.size());
                 const int rp = (fdn[i].writePos - fdn[i].delayLen + sz) % sz;
-                // 1-pole LP damping in feedback path
-                fdn[i].dampZ += fdnDampCoef * (fdn[i].buf[rp] - fdn[i].dampZ);
-                s[i] = fdn[i].dampZ * fdnDecay;
+                d[i] = fdn[i].buf[rp];
             }
-            // Householder reflection: new_s[i] = s[i] − 0.5 × Σs
-            // Orthogonal → lossless energy routing between taps → dense, smooth tail
-            const float sum = s[0] + s[1] + s[2] + s[3];
+
+            // 2. Householder reflection first — orthogonal energy routing
+            const float sum = d[0] + d[1] + d[2] + d[3];
+            float f[kFDNTaps];
+            for (int i = 0; i < kFDNTaps; ++i)
+                f[i] = d[i] - 0.5f * sum;
+
+            // 3. Apply 1-pole LP damping to the mixed signal, then decay
             for (int i = 0; i < kFDNTaps; ++i)
             {
-                fdn[i].buf[fdn[i].writePos] = input + s[i] - 0.5f * sum;
+                fdn[i].dampZ += fdnDampCoef * (f[i] - fdn[i].dampZ);
+                f[i] = fdn[i].dampZ * fdnDecay;
+            }
+
+            // 4. Write input + feedback back to delay lines
+            for (int i = 0; i < kFDNTaps; ++i)
+            {
+                fdn[i].buf[fdn[i].writePos] = input + f[i];
                 fdn[i].writePos = (fdn[i].writePos + 1) % static_cast<int> (fdn[i].buf.size());
             }
-            return (s[0] + s[1] + s[2] + s[3]) * 0.25f;
+
+            // 5. Output: average of pre-mix readings (before Householder coloration)
+            return (d[0] + d[1] + d[2] + d[3]) * 0.25f;
         };
 
         float* L = buffer.getWritePointer (0);
@@ -575,10 +637,12 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         }
     }
 
-    // 4. Stereo width (stereo_width) -- M/S matrix, 50 = unity
+    // 4. Stereo width (stereo_width) -- M/S matrix, 50 = unity.
+    // Capped at 1.5× (was 2.0×) — beyond 1.5 the side channel dominates and
+    // causes severe phase cancellation when summed to mono.
     if (numCh >= 2)
     {
-        const float widthGain = juce::jmap (stereoWidth, 0.0f, 100.0f, 0.0f, 2.0f);
+        const float widthGain = juce::jmap (stereoWidth, 0.0f, 100.0f, 0.0f, 1.5f);
         float* L = buffer.getWritePointer (0);
         float* R = buffer.getWritePointer (1);
         for (int n = 0; n < numSa; ++n)
