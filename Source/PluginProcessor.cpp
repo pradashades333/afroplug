@@ -361,10 +361,13 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 break;
             }
 
-            case 1: // Tape — soft tanh compression, pushes into saturation gradually
+            case 1: // Tape — soft tanh saturation, unity small-signal gain
             {
-                const float inputGain  = 1.0f + drive * 5.0f;
-                const float normFactor = 1.0f / std::tanh (inputGain);
+                // Normalise by inputGain (the small-signal slope at x=0), NOT by
+                // tanh(inputGain) (the saturation ceiling). Dividing by tanh(k) < k
+                // would boost quiet signals proportionally — ear-raping at high drive.
+                const float inputGain  = 1.0f + drive * 3.5f;
+                const float normFactor = 1.0f / inputGain;
                 for (int ch = 0; ch < numCh; ++ch)
                 {
                     float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
@@ -376,16 +379,16 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             case 2: // Tube — asymmetric DC-biased clip → even-order harmonics (warm)
             {
-                // The bias shifts the transfer curve so positive peaks saturate
-                // harder than negative ones (like a real tube stage).
-                // We must subtract the DC component that bias injects at zero input,
-                // then renormalise by the largest peak (pos or neg) to keep unity gain.
-                const float tubeDrive = 1.0f + drive * 6.0f;
+                // Bias shifts the curve so positive peaks saturate harder (real tube stage).
+                // dc  = tanh(bias*k) — DC injected at zero input, must be subtracted.
+                // Normalise by the *small-signal gain* f'(0) = k·sech²(bias·k)
+                //                                          = k·(1 - dc²)
+                // This keeps quiet signals at input level instead of boosting them.
+                const float tubeDrive = 1.0f + drive * 4.5f;
                 const float bias      = drive * 0.20f;
                 const float dc        = std::tanh (bias * tubeDrive);
-                const float posMax    = std::tanh ((1.0f + bias) * tubeDrive) - dc;
-                const float negMax    = std::abs (std::tanh ((-1.0f + bias) * tubeDrive) - dc);
-                const float norm      = 1.0f / std::max ({ posMax, negMax, 1e-6f });
+                const float ssGain    = tubeDrive * (1.0f - dc * dc); // sech²=1-tanh²
+                const float norm      = 1.0f / std::max (ssGain, 1e-6f);
                 for (int ch = 0; ch < numCh; ++ch)
                 {
                     float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
@@ -398,7 +401,7 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             case 3: // Console — very soft saturation; IIR EQ applied after downsample
             {
                 const float consoleDrive = 1.0f + drive * 1.5f;
-                const float normFactor   = 1.0f / std::tanh (consoleDrive);
+                const float normFactor   = 1.0f / consoleDrive;   // small-signal unity gain
                 for (int ch = 0; ch < numCh; ++ch)
                 {
                     float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
@@ -411,6 +414,10 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             case 4: // Grit — hard clip ONLY at oversampled rate.
             // Bit crush happens after downsample (base rate) so it sounds correct:
             // quantisation noise should be at the output sample rate, not 4× it.
+            //
+            // Do NOT divide by threshold — that boosts all content below the clip
+            // point by up to +9 dB at full drive. Just clamp; quiet signals pass
+            // through unchanged and only peaks get bitten off.
             {
                 if (drive > 0.01f)
                 {
@@ -419,7 +426,7 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                     {
                         float* p = osBlock.getChannelPointer (static_cast<size_t> (ch));
                         for (int n = 0; n < osN; ++n)
-                            p[n] = juce::jlimit (-threshold, threshold, p[n]) / threshold;
+                            p[n] = juce::jlimit (-threshold, threshold, p[n]);
                     }
                 }
                 break;
@@ -488,6 +495,16 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             *toneConsoleHiShelf.state = *juce::dsp::IIR::Coefficients<float>::makeHighShelf (
                 currentSampleRate, 8000.0f, 0.7f, 1.0f + drive * 0.4f);
             toneConsoleHiShelf.process (context);
+
+            // Compensate for IIR boost: the peak adds up to +4.7 dB and the shelf
+            // up to +3.2 dB — apply inverse gain so overall level stays stable.
+            const float eqComp = 1.0f / (1.0f + drive * 0.55f);
+            for (int ch = 0; ch < numCh; ++ch)
+            {
+                float* p = block.getChannelPointer (static_cast<size_t> (ch));
+                for (int n = 0; n < numSa; ++n)
+                    p[n] *= eqComp;
+            }
         }
     }
 
