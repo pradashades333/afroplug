@@ -109,8 +109,10 @@ void AfroplugAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     const float twoPiOverSr = juce::MathConstants<float>::twoPi / (float) sampleRate;
     tapeHfLPCoef = 1.0f - std::exp (-twoPiOverSr * 9000.0f);   // 9 kHz  — tape air roll
     delayFbLPCoef= 1.0f - std::exp (-twoPiOverSr * 4500.0f);   // 4.5 kHz — analog repeat warmth
+    sideHPR      = std::exp (-twoPiOverSr * 200.0f);           // 200 Hz HP pole — side-channel bass blocker
     for (int i = 0; i < kMaxCh; ++i)
         tapeHfLP[i] = delayFbLP[i] = 0.0f;
+    sideHPx1 = sideHPy1 = 0.0f;
 
     // ── FDN Reverb — pre-allocate at max needed size for this sample rate ─────
     // Base delay lengths (samples at 44.1 kHz). Chosen as coprime values so
@@ -179,6 +181,7 @@ void AfroplugAudioProcessor::releaseResources()
     oversampling.reset();
     for (int i = 0; i < kMaxCh; ++i)
         tapeHfLP[i] = delayFbLP[i] = dcBlockX[i] = dcBlockY[i] = 0.0f;
+    sideHPx1 = sideHPy1 = 0.0f;
     for (int i = 0; i < kFDNTaps; ++i)
     {
         std::fill (fdnL[i].buf.begin(), fdnL[i].buf.end(), 0.0f);
@@ -429,9 +432,10 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         oversampling.processSamplesDown (block);
 
         // DC blocker — 1-pole HP catches any residual DC (especially from Tube bias).
-        // y[n] = x[n] − x[n−1] + R·y[n−1]   (R = 0.9998 → fc ≈ 3 Hz @ 44.1 kHz)
+        // y[n] = x[n] − x[n−1] + R·y[n−1]   (R = 0.9990 → fc ≈ 7 Hz @ 44.1 kHz)
+        // Faster than 0.9998 (≈1.4 Hz) — clears Tube-mode bias transients in ~4 ms.
         {
-            constexpr float R = 0.9998f;
+            constexpr float R = 0.9990f;
             for (int ch = 0; ch < numCh && ch < kMaxCh; ++ch)
             {
                 float* p = block.getChannelPointer (static_cast<size_t> (ch));
@@ -494,7 +498,10 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         const float mix  = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.45f);
         const float dep  = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.60f);
-        const float rate = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.05f,  1.20f);
+        // Exponential rate curve: 0.05→1.20 Hz with more resolution at slow speeds.
+        // At 50% knob: 0.245 Hz (vs 0.625 Hz linear) — gives better control in the
+        // slow lush range without sacrificing fast tremolo at the top of the knob.
+        const float rate = 0.05f * std::pow (1.20f / 0.05f, vibePhaser / 100.0f);
         const float cf   = juce::jmap (vibePhaser, 0.0f, 100.0f, 400.0f, 1200.0f);
         const float fb   = juce::jmap (vibePhaser, 0.0f, 100.0f, 0.0f,   0.35f);
         phaser.setMix             (mix);
@@ -591,9 +598,14 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         // Per-sample FDN step.
         // Correct signal order: read → Householder mix → damp → decay → write.
-        // The previous implementation damped before mixing, which coloured the
-        // taps individually instead of the cross-mixed signal — giving a thinner tail.
-        auto fdnStep = [&] (std::array<FDNLine, kFDNTaps>& fdn, float input) -> float
+        // dampMult: per-tap scaling of fdnDampCoef so L/R have subtly different
+        // HF decay rates — this de-correlates the two channels without needing
+        // separate reverb engines, adding real stereo width to the tail.
+        static constexpr float kLDampMult[kFDNTaps] = { 0.90f, 1.00f, 1.10f, 1.05f };
+        static constexpr float kRDampMult[kFDNTaps] = { 1.00f, 0.85f, 1.15f, 0.95f };
+
+        auto fdnStep = [&] (std::array<FDNLine, kFDNTaps>& fdn,
+                            float input, const float* dampMult) -> float
         {
             // 1. Read all taps
             float d[kFDNTaps];
@@ -604,16 +616,18 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 d[i] = fdn[i].buf[rp];
             }
 
-            // 2. Householder reflection first — orthogonal energy routing
+            // 2. Householder reflection — orthogonal 4×4 mixing matrix
+            // H[i,j] = δ[i,j] − 0.5   (energy-preserving: H·H^T = I for N=4)
             const float sum = d[0] + d[1] + d[2] + d[3];
             float f[kFDNTaps];
             for (int i = 0; i < kFDNTaps; ++i)
                 f[i] = d[i] - 0.5f * sum;
 
-            // 3. Apply 1-pole LP damping to the mixed signal, then decay
+            // 3. Per-tap 1-pole LP damping (varied per channel for stereo diffusion)
             for (int i = 0; i < kFDNTaps; ++i)
             {
-                fdn[i].dampZ += fdnDampCoef * (f[i] - fdn[i].dampZ);
+                const float coef = juce::jlimit (0.0f, 1.0f, fdnDampCoef * dampMult[i]);
+                fdn[i].dampZ += coef * (f[i] - fdn[i].dampZ);
                 f[i] = fdn[i].dampZ * fdnDecay;
             }
 
@@ -624,7 +638,7 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 fdn[i].writePos = (fdn[i].writePos + 1) % static_cast<int> (fdn[i].buf.size());
             }
 
-            // 5. Output: average of pre-mix readings (before Householder coloration)
+            // 5. Output: average of pre-mix tap readings
             return (d[0] + d[1] + d[2] + d[3]) * 0.25f;
         };
 
@@ -632,23 +646,30 @@ void AfroplugAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         float* R = numCh >= 2 ? buffer.getWritePointer (1) : L;
         for (int n = 0; n < numSa; ++n)
         {
-            L[n] += fdnStep (fdnL, L[n]) * fdnWet;
-            if (numCh >= 2) R[n] += fdnStep (fdnR, R[n]) * fdnWet;
+            L[n] += fdnStep (fdnL, L[n], kLDampMult) * fdnWet;
+            if (numCh >= 2) R[n] += fdnStep (fdnR, R[n], kRDampMult) * fdnWet;
         }
     }
 
     // 4. Stereo width (stereo_width) -- M/S matrix, 50 = unity.
-    // Capped at 1.5× (was 2.0×) — beyond 1.5 the side channel dominates and
-    // causes severe phase cancellation when summed to mono.
+    // Capped at 1.5× side gain. The side signal is high-passed at 200 Hz before
+    // re-encoding so that bass below 200 Hz stays fully mono — prevents comb
+    // filtering and level loss on mono speakers / club systems.
     if (numCh >= 2)
     {
         const float widthGain = juce::jmap (stereoWidth, 0.0f, 100.0f, 0.0f, 1.5f);
+        // HP coefficients: y[n] = B*(x[n]-x[n-1]) + R*y[n-1]  (unity gain at HF)
+        const float hpB = (1.0f + sideHPR) * 0.5f;
         float* L = buffer.getWritePointer (0);
         float* R = buffer.getWritePointer (1);
         for (int n = 0; n < numSa; ++n)
         {
-            const float mid  = 0.5f * (L[n] + R[n]);
-            const float side = 0.5f * (L[n] - R[n]) * widthGain;
+            const float mid   = 0.5f * (L[n] + R[n]);
+            const float sideIn = 0.5f * (L[n] - R[n]) * widthGain;
+            // 1-pole HP at 200 Hz — removes sub-bass from side channel
+            const float side  = hpB * sideIn - hpB * sideHPx1 + sideHPR * sideHPy1;
+            sideHPx1 = sideIn;
+            sideHPy1 = side;
             L[n] = mid + side;
             R[n] = mid - side;
         }

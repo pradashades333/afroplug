@@ -100,6 +100,12 @@ private:
     float delayFbLP[kMaxCh] {};
     float delayFbLPCoef     { 0.51f };   // default ≈ 5 kHz @ 44.1 kHz
 
+    // Stereo-width side-channel HP — removes sub-200 Hz from side so bass stays
+    // mono-compatible. Prevents low-frequency phase cancellation on mono playback.
+    float sideHPx1  { 0.0f };   // HP state: previous input sample
+    float sideHPy1  { 0.0f };   // HP state: previous output sample
+    float sideHPR   { 0.972f }; // pole = exp(-2π·200/sr); recomputed in prepareToPlay
+
     //==============================================================================
     // DSP modules (juce::dsp namespace)
     //
