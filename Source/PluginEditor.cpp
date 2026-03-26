@@ -187,8 +187,6 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
     reverbModeSelector.setColour (juce::ComboBox::outlineColourId,    juce::Colour (0xffaa77ee));
     reverbModeSelector.setColour (juce::ComboBox::textColourId,       juce::Colour (0xffaa77ee));
     reverbModeSelector.setColour (juce::ComboBox::arrowColourId,      juce::Colour (0xffaa77ee));
-    toneModeSelector.onChange  = [this]() { repaint(); };
-    reverbModeSelector.onChange = [this]() { repaint(); };
     addAndMakeVisible (reverbModeSelector);
 
     // BOTTOM ROW — AI button (circle, centre)
@@ -278,12 +276,13 @@ AfroplugAudioProcessorEditor::AfroplugAudioProcessorEditor (AfroplugAudioProcess
         aiAnimFrame  = 0;
         aiAnalyzeLabel.setColour (juce::Label::textColourId, AC::textMuted);
         aiAnalyzeLabel.setText   ("SCANNING...", juce::dontSendNotification);
-        startTimerHz (30);
     };
 
     setResizable (true, true);
     setResizeLimits (540, 316, 1800, 1056);
     setSize (900, 528);
+
+    startTimerHz (30);   // keep UI in sync with parameter state at all times
 }
 
 AfroplugAudioProcessorEditor::~AfroplugAudioProcessorEditor()
@@ -305,6 +304,12 @@ void AfroplugAudioProcessorEditor::refreshValueLabels()
 //==============================================================================
 void AfroplugAudioProcessorEditor::timerCallback()
 {
+    // Always repaint the full UI so mode selectors, icons, and value labels
+    // stay in sync with APVTS state (automation, AI analysis, preset loads).
+    repaint();
+
+    if (!aiAnimating) return;
+
     ++aiAnimFrame;
 
     // Frame 30 (~1 s): spinner done → show detected type in yellow
@@ -317,14 +322,11 @@ void AfroplugAudioProcessorEditor::timerCallback()
     // Frame 60 (~2 s): reset label to default
     if (aiAnimFrame >= 60)
     {
-        stopTimer();
         aiAnimating = false;
         aiAnimFrame = 0;
         aiAnalyzeLabel.setColour (juce::Label::textColourId, AC::textMuted);
         aiAnalyzeLabel.setText   ("ANALYZE", juce::dontSendNotification);
     }
-
-    repaint (aiPanelRect);  // repaint only the AI section
 }
 
 //==============================================================================
