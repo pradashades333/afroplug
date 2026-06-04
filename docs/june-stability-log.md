@@ -11,3 +11,4 @@
 - [2026-06-26 12:01:07+02:00] logged playback edge-case follow-up.
 - [2026-06-29 17:36:12+02:00] reviewed export sanity notes.
 - [2026-06-03 11:07:13+02:00] reviewed gain staging notes.
+- [2026-06-04 11:52:38+02:00] captured plugin polish note.
