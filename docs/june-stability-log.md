@@ -1,2 +1,3 @@
 - [2026-06-03 12:11:17+02:00] checked preset recall notes.
 - [2026-06-05 17:46:22+02:00] tightened gain staging checklist.
+- [2026-06-07 18:21:27+02:00] logged playback edge-case follow-up.
