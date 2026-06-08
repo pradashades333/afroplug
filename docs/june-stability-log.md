@@ -12,3 +12,4 @@
 - [2026-06-29 17:36:12+02:00] reviewed export sanity notes.
 - [2026-06-03 11:07:13+02:00] reviewed gain staging notes.
 - [2026-06-04 11:52:38+02:00] captured plugin polish note.
+- [2026-06-08 12:37:03+02:00] logged playback follow-up.
