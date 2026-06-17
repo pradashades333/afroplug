@@ -17,3 +17,4 @@
 - [2026-06-11 11:07:53+02:00] logged playback follow-up.
 - [2026-06-14 14:52:18+02:00] reviewed gain staging notes.
 - [2026-06-16 10:37:43+02:00] logged playback follow-up.
+- [2026-06-17 15:22:08+02:00] logged playback follow-up.
