@@ -20,3 +20,4 @@
 - [2026-06-17 15:22:08+02:00] logged playback follow-up.
 - [2026-06-19 18:07:33+02:00] reviewed gain staging notes.
 - [2026-06-21 14:52:58+02:00] logged playback follow-up.
+- [2026-06-24 12:37:23+02:00] captured plugin polish note.
