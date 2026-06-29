@@ -9,3 +9,4 @@
 - [2026-06-21 12:51:57+02:00] checked preset recall notes.
 - [2026-06-24 10:26:02+02:00] tightened gain staging checklist.
 - [2026-06-26 12:01:07+02:00] logged playback edge-case follow-up.
+- [2026-06-29 17:36:12+02:00] reviewed export sanity notes.
