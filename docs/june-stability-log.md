@@ -24,3 +24,4 @@
 - [2026-06-26 13:22:48+02:00] logged playback follow-up.
 - [2026-06-27 13:07:13+02:00] checked preset edge cases.
 - [2026-06-30 10:52:38+02:00] reviewed gain staging notes.
+- [2026-06-30 14:37:03+02:00] reviewed gain staging notes.
